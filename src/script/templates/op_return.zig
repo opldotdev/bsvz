@@ -51,17 +51,17 @@ test "op_return encode handles zero-length and max direct pushes" {
     defer allocator.free(empty);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x6a, 0x00 }, empty);
 
-    const max_push = try encode(allocator, &([_]u8{0x42} ** 75));
+    const max_push = try encode(allocator, &(@as([75]u8, @splat(0x42))));
     defer allocator.free(max_push);
     try std.testing.expectEqual(@as(usize, 77), max_push.len);
     try std.testing.expectEqual(@as(u8, 0x6a), max_push[0]);
     try std.testing.expectEqual(@as(u8, 75), max_push[1]);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0x42} ** 75), max_push[2..]);
+    try std.testing.expectEqualSlices(u8, &(@as([75]u8, @splat(0x42))), max_push[2..]);
 }
 
 test "op_return encode rejects oversized direct pushes" {
     const allocator = std.testing.allocator;
-    try std.testing.expectError(error.UnsupportedDataPush, encode(allocator, &([_]u8{0} ** 76)));
+    try std.testing.expectError(error.UnsupportedDataPush, encode(allocator, &(@as([76]u8, @splat(0)))));
 }
 
 test "op_return matches rejects non-op-return scripts" {

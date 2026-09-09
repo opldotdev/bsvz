@@ -2,6 +2,7 @@
 //! Behavior matches github.com/bsv-blockchain/go-sdk compat/bip39 (big.Int checksum path).
 
 const std = @import("std");
+const util = @import("../util.zig");
 const hex = @import("hex.zig");
 const StaticStringMap = std.static_string_map.StaticStringMap;
 const HmacSha512 = std.crypto.auth.hmac.sha2.HmacSha512;
@@ -52,7 +53,7 @@ pub fn newEntropy(allocator: std.mem.Allocator, bit_size: usize) Error![]u8 {
     try validateEntropyBits(bit_size);
     const n = bit_size / 8;
     const buf = try allocator.alloc(u8, n);
-    std.crypto.random.bytes(buf);
+    util.randomBytes(buf);
     return buf;
 }
 
@@ -106,12 +107,12 @@ fn checksumShift(n_words: usize) u32 {
 }
 
 fn entropyFromWords(words: *[24][]const u8, nw: usize, out: *[32]u8) Error!usize {
-    var b: EntropyInt = 0;
+    var b: u512 = 0;
     for (0..nw) |i| {
         const idx = wordIndex(words[i]) orelse return error.InvalidMnemonic;
-        b = b * @as(EntropyInt, 2048) + @as(EntropyInt, idx);
+        b = b * @as(u512, 2048) + @as(u512, idx);
     }
-    const mask: EntropyInt = checksumMask(nw);
+    const mask: u512 = checksumMask(nw);
     const cs = b & mask;
     const b_ent = b / (mask + 1);
 
@@ -165,7 +166,7 @@ pub fn newMnemonic(allocator: std.mem.Allocator, entropy: []const u8) Error![]u8
     return s;
 }
 
-fn addChecksumU512(entropy: []const u8) EntropyInt {
+fn addChecksumU512(entropy: []const u8) u512 {
     var bits = beBytesToEntropyInt(entropy);
     const checksum_bits: u32 = @intCast(entropy.len / 4);
     var hash: [32]u8 = undefined;
@@ -179,14 +180,14 @@ fn addChecksumU512(entropy: []const u8) EntropyInt {
     return bits;
 }
 
-fn beBytesToEntropyInt(s: []const u8) EntropyInt {
-    var x: EntropyInt = 0;
+fn beBytesToEntropyInt(s: []const u8) u512 {
+    var x: u512 = 0;
     for (s) |b| x = (x << 8) | b;
     return x;
 }
 
 /// Writes minimal big-endian `x` into `out`, left-padded with zeros to `pad_len` (Go `padByteSlice`).
-fn u512ToBePadded(x: EntropyInt, out: []u8, pad_len: usize) []const u8 {
+fn u512ToBePadded(x: u512, out: []u8, pad_len: usize) []const u8 {
     std.debug.assert(out.len >= pad_len);
     var tmp: [64]u8 = undefined;
     const minimal = u512ToBeMinimal(x, &tmp);
@@ -195,7 +196,7 @@ fn u512ToBePadded(x: EntropyInt, out: []u8, pad_len: usize) []const u8 {
     return out[0..pad_len];
 }
 
-fn u512ToBeMinimal(x: EntropyInt, stack: *[64]u8) []const u8 {
+fn u512ToBeMinimal(x: u512, stack: *[64]u8) []const u8 {
     if (x == 0) {
         stack[63] = 0;
         return stack[63..64];
@@ -249,7 +250,7 @@ pub fn mnemonicToByteArrayAlloc(allocator: std.mem.Allocator, mnemonic: []const 
     return out;
 }
 
-const EntropyInt = std.meta.Int(.unsigned, 512);
+const EntropyInt = u512;
 
 test "bip39 official vectors (entropy, mnemonic, seed) passphrase TREZOR" {
     const allocator = std.testing.allocator;
@@ -446,7 +447,7 @@ test "bip39 checksum errors match go-sdk cases" {
 test "bip39 newMnemonic rejects bad entropy length" {
     const allocator = std.testing.allocator;
     try std.testing.expectError(error.EntropyLengthInvalid, newMnemonic(allocator, &.{}));
-    var bad17: [17]u8 = .{0} ** 17;
+    var bad17: [17]u8 = @splat(0);
     try std.testing.expectError(error.EntropyLengthInvalid, newMnemonic(allocator, &bad17));
 }
 

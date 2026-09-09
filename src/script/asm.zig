@@ -127,6 +127,12 @@ fn isHexToken(tok: []const u8) bool {
 fn tokenToOpcodeByte(tok: []const u8) ?u8 {
     if (std.mem.eql(u8, tok, "OP_FALSE")) return 0x00;
     if (std.mem.eql(u8, tok, "OP_TRUE")) return 0x51;
+    // Legacy pre-Chronicle names still parse to their renamed bytes.
+    if (std.mem.eql(u8, tok, "OP_NOP4")) return @intFromEnum(Opcode.OP_SUBSTR);
+    if (std.mem.eql(u8, tok, "OP_NOP5")) return @intFromEnum(Opcode.OP_LEFT);
+    if (std.mem.eql(u8, tok, "OP_NOP6")) return @intFromEnum(Opcode.OP_RIGHT);
+    if (std.mem.eql(u8, tok, "OP_NOP7")) return @intFromEnum(Opcode.OP_LSHIFTNUM);
+    if (std.mem.eql(u8, tok, "OP_NOP8")) return @intFromEnum(Opcode.OP_RSHIFTNUM);
     var i: usize = 0;
     while (i < 256) : (i += 1) {
         const op = Opcode.fromByte(@intCast(i));
@@ -177,4 +183,25 @@ test "toAsm and fromAsm match go-sdk p2pkh" {
     const round = try fromAsmAlloc(allocator, asm_str);
     defer allocator.free(round);
     try std.testing.expectEqualSlices(u8, &raw, round);
+}
+
+test "asm emits Chronicle names and still parses legacy NOP aliases" {
+    const allocator = std.testing.allocator;
+
+    // toAsm emits the new (Chronicle) names for the renamed bytes.
+    const asm_new = try toAsmAlloc(allocator, Script.init(&[_]u8{ 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0x8d, 0x8e }));
+    defer allocator.free(asm_new);
+    try std.testing.expectEqualStrings(
+        "OP_SUBSTR OP_LEFT OP_RIGHT OP_LSHIFTNUM OP_RSHIFTNUM OP_2MUL OP_2DIV",
+        asm_new,
+    );
+
+    // fromAsm round-trips both the new names and the legacy NOP4-NOP8 aliases.
+    const bytes_new = try fromAsmAlloc(allocator, asm_new);
+    defer allocator.free(bytes_new);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0x8d, 0x8e }, bytes_new);
+
+    const bytes_legacy = try fromAsmAlloc(allocator, "OP_NOP4 OP_NOP5 OP_NOP6 OP_NOP7 OP_NOP8");
+    defer allocator.free(bytes_legacy);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xb3, 0xb4, 0xb5, 0xb6, 0xb7 }, bytes_legacy);
 }

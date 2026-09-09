@@ -22,7 +22,7 @@ fn appendPayload(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator
 
 /// Double-SHA256 of the BSM-prefixed payload (`VarInt(len) || prefix || VarInt(len) || message`).
 pub fn messageDigestAlloc(allocator: std.mem.Allocator, message: []const u8) ![32]u8 {
-    var list = std.ArrayListUnmanaged(u8){};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     errdefer list.deinit(allocator);
     try appendPayload(&list, allocator, message);
     const owned = try list.toOwnedSlice(allocator);
@@ -70,7 +70,7 @@ pub fn verifyMessage(
 
 test "bsm sign / recover / verify roundtrip" {
     const allocator = std.testing.allocator;
-    var kb: [32]u8 = [_]u8{0} ** 32;
+    var kb: [32]u8 = @as([32]u8, @splat(0));
     kb[31] = 1;
     const sk = try crypto.PrivateKey.fromBytes(kb);
     const message = "hello bsm";

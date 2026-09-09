@@ -192,9 +192,25 @@ pub fn isPushOnly(script: Script) Error!bool {
             .op_return_data => return false,
             .opcode => |op| {
                 switch (op) {
-                    .OP_0, .OP_1NEGATE, .OP_RESERVED,
-                    .OP_1, .OP_2, .OP_3, .OP_4, .OP_5, .OP_6, .OP_7, .OP_8,
-                    .OP_9, .OP_10, .OP_11, .OP_12, .OP_13, .OP_14, .OP_15, .OP_16,
+                    .OP_0,
+                    .OP_1NEGATE,
+                    .OP_RESERVED,
+                    .OP_1,
+                    .OP_2,
+                    .OP_3,
+                    .OP_4,
+                    .OP_5,
+                    .OP_6,
+                    .OP_7,
+                    .OP_8,
+                    .OP_9,
+                    .OP_10,
+                    .OP_11,
+                    .OP_12,
+                    .OP_13,
+                    .OP_14,
+                    .OP_15,
+                    .OP_16,
                     => {},
                     else => return false,
                 }
@@ -375,23 +391,25 @@ test "parser rejects malformed pushdata length prefixes" {
     })));
     try std.testing.expectError(error.InvalidPushData, parseAlloc(allocator, Script.init(&[_]u8{
         @intFromEnum(Opcode.OP_PUSHDATA4),
-        0x01, 0x00, 0x00,
+        0x01,
+        0x00,
+        0x00,
     })));
 }
 
 test "parser roundtrips pushdata boundary encodings" {
     const allocator = std.testing.allocator;
 
-    const direct_75 = &[_]u8{0x11} ** 75;
-    const pushdata1_76 = &[_]u8{0x22} ** 76;
-    const pushdata1_255 = &[_]u8{0x33} ** 255;
-    const pushdata2_256 = &[_]u8{0x44} ** 256;
+    const direct_75 = &@as([75]u8, @splat(0x11));
+    const pushdata1_76 = &@as([76]u8, @splat(0x22));
+    const pushdata1_255 = &@as([255]u8, @splat(0x33));
+    const pushdata2_256 = &@as([256]u8, @splat(0x44));
 
     const script = Script.init(
         &[_]u8{75} ++ direct_75 ++
-        [_]u8{ @intFromEnum(Opcode.OP_PUSHDATA1), 76 } ++ pushdata1_76 ++
-        [_]u8{ @intFromEnum(Opcode.OP_PUSHDATA1), 255 } ++ pushdata1_255 ++
-        [_]u8{ @intFromEnum(Opcode.OP_PUSHDATA2), 0x00, 0x01 } ++ pushdata2_256,
+            [_]u8{ @intFromEnum(Opcode.OP_PUSHDATA1), 76 } ++ pushdata1_76 ++
+            [_]u8{ @intFromEnum(Opcode.OP_PUSHDATA1), 255 } ++ pushdata1_255 ++
+            [_]u8{ @intFromEnum(Opcode.OP_PUSHDATA2), 0x00, 0x01 } ++ pushdata2_256,
     );
 
     const chunks = try parseAlloc(allocator, script);
@@ -417,12 +435,16 @@ test "parser rejects malformed pushdata payload truncation" {
     })));
     try std.testing.expectError(error.InvalidPushData, parseAlloc(allocator, Script.init(&[_]u8{
         @intFromEnum(Opcode.OP_PUSHDATA2),
-        0x02, 0x00,
+        0x02,
+        0x00,
         0xaa,
     })));
     try std.testing.expectError(error.InvalidPushData, parseAlloc(allocator, Script.init(&[_]u8{
         @intFromEnum(Opcode.OP_PUSHDATA4),
-        0x02, 0x00, 0x00, 0x00,
+        0x02,
+        0x00,
+        0x00,
+        0x00,
         0xaa,
     })));
 }

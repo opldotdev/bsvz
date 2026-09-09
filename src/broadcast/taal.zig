@@ -10,6 +10,7 @@ pub const TAALBroadcast = struct {
     pub fn broadcast(
         self: TAALBroadcast,
         allocator: std.mem.Allocator,
+        io: std.Io,
         tx: *const transaction.Transaction,
     ) !types.BroadcastResult {
         const serialized = try tx.serialize(allocator);
@@ -24,6 +25,7 @@ pub const TAALBroadcast = struct {
 
         const post = try http_post.postBodyAlloc(
             allocator,
+            io,
             "https://api.taal.com/api/v1/broadcast",
             hdrs.items,
             serialized,

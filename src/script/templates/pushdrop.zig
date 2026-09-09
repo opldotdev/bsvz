@@ -121,7 +121,7 @@ pub fn decodeLockBefore(allocator: std.mem.Allocator, script: Script) !?Data {
 
     const pk = secp.PublicKey.fromSec1(chunks[0].push_data.data) catch return null;
 
-    var fields = std.ArrayListUnmanaged([]const u8){};
+    var fields: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer freeDecodedFields(allocator, &fields);
 
     var i: usize = 2;
@@ -159,7 +159,7 @@ pub fn deinitDecoded(allocator: std.mem.Allocator, d: *Data) void {
 test "pushdrop encode lock-before decode roundtrip" {
     const a = std.testing.allocator;
     const crypto = @import("../../crypto/secp256k1.zig");
-    const sk = [_]u8{0x01} ++ [_]u8{0} ** 31;
+    const sk = [_]u8{0x01} ++ @as([31]u8, @splat(0));
     const pk = try (try crypto.PrivateKey.fromBytes(sk)).publicKey();
 
     const fields: []const []const u8 = &.{ &[_]u8{3}, &[_]u8{ 2, 1 } };
@@ -176,7 +176,7 @@ test "pushdrop encode lock-before decode roundtrip" {
 test "pushdrop small-int field roundtrip" {
     const a = std.testing.allocator;
     const crypto = @import("../../crypto/secp256k1.zig");
-    const sk = [_]u8{0x01} ++ [_]u8{0} ** 31;
+    const sk = [_]u8{0x01} ++ @as([31]u8, @splat(0));
     const pk = try (try crypto.PrivateKey.fromBytes(sk)).publicKey();
     const fields: []const []const u8 = &.{&[_]u8{1}};
     const script_bytes = try encodeLockBefore(a, &pk.bytes, fields);
@@ -189,7 +189,7 @@ test "pushdrop small-int field roundtrip" {
 test "pushdrop rejects bad drop suffix and trailing junk" {
     const allocator = std.testing.allocator;
     const crypto = @import("../../crypto/secp256k1.zig");
-    const sk = [_]u8{0x01} ++ [_]u8{0} ** 31;
+    const sk = [_]u8{0x01} ++ @as([31]u8, @splat(0));
     const pk = try (try crypto.PrivateKey.fromBytes(sk)).publicKey();
 
     var wrong = try encodeLockBefore(allocator, &pk.bytes, &[_][]const u8{ "one", "two", "three" });

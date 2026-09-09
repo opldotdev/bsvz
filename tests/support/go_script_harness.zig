@@ -34,7 +34,7 @@ pub fn runCase(allocator: std.mem.Allocator, case: Case) !void {
     var inputs = [_]bsvz.transaction.Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x42} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x42)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),

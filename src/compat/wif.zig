@@ -59,7 +59,7 @@ fn networkFromPrefix(prefix: u8) ?primitives.network.Network {
 
 test "wif compressed mainnet key one matches the known vector" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -81,7 +81,7 @@ test "wif compressed mainnet key one matches the known vector" {
 
 test "wif decode roundtrip preserves key bytes and compression flag" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0x42} ** 32;
+    var key_bytes = @as([32]u8, @splat(0x42));
     key_bytes[0] = 0x01;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -96,10 +96,10 @@ test "wif decode roundtrip preserves key bytes and compression flag" {
 
 test "wif decode rejects malformed payloads, prefixes, and checksums" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
-    const short_payload = try primitives.base58.encodeCheck(allocator, &([_]u8{0x80} ++ ([_]u8{0x00} ** 31)));
+    const short_payload = try primitives.base58.encodeCheck(allocator, &([_]u8{0x80} ++ (@as([31]u8, @splat(0x00)))));
     defer allocator.free(short_payload);
     try std.testing.expectError(error.InvalidWifPayload, decode(allocator, short_payload));
 

@@ -117,7 +117,7 @@ pub fn verifyScripts(ctx: ExecutionContext, unlocking_script: Script, locking_sc
     var state: ExecutionState = .{};
     defer state.deinit(ctx.allocator);
 
-    if (ctx.flags.sig_push_only and !(try isPushOnly(unlocking_script))) return error.SigPushOnly;
+    if (ctx.flags.sig_push_only and enforceNonMalleability(ctx) and !(try isPushOnly(unlocking_script))) return error.SigPushOnly;
 
     if (!(try executeVerificationPhase(ctx, &state, .unlocking, unlocking_script))) return false;
     state.clearAltStack(ctx.allocator);
@@ -129,7 +129,7 @@ pub fn verifyScripts(ctx: ExecutionContext, unlocking_script: Script, locking_sc
 fn finalScriptResult(ctx: ExecutionContext, state: *const ExecutionState) Error!bool {
     if (state.condition_stack.items.len != 0) return error.UnbalancedConditionals;
     if (state.stack.items.len == 0) return false;
-    if (ctx.flags.clean_stack and state.stack.items.len != 1) return error.CleanStack;
+    if (ctx.flags.clean_stack and enforceNonMalleability(ctx) and state.stack.items.len != 1) return error.CleanStack;
     return isTruthy(state.stack.items[state.stack.items.len - 1]);
 }
 
@@ -222,12 +222,44 @@ fn executeIntoState(
                     if (state.stack.items.len == 0) return error.UnbalancedConditionals;
                     const cond_bytes = try popOwned(state);
                     defer ctx.allocator.free(cond_bytes);
-                    if (ctx.flags.minimal_if) {
+                    if (ctx.flags.minimal_if and enforceNonMalleability(ctx)) {
                         if (cond_bytes.len > 1) return error.MinimalIf;
                         if (cond_bytes.len == 1 and cond_bytes[0] != 0x01) return error.MinimalIf;
                     }
                     const cond = isTruthy(cond_bytes);
                     try state.condition_stack.append(ctx.allocator, if (op == .OP_IF) cond else !cond);
+                } else {
+                    try state.condition_stack.append(ctx.allocator, false);
+                }
+                try state.else_seen_stack.append(ctx.allocator, false);
+                continue;
+            },
+            .OP_VERIF, .OP_VERNOTIF => {
+                try countOp(ctx, state);
+                if (!ctx.flags.utxo_after_chronicle) {
+                    // Pre-Chronicle: bad opcode when executed; a pure NOP in
+                    // untaken branches post-Genesis (node: `if(utxo_after_genesis
+                    // && !fExec) break;`); rejected pre-Genesis even untaken
+                    // (handled by the !shouldExecute guard above).
+                    if (shouldExecute(state)) return error.UnknownOpcode;
+                    if (!ctx.flags.utxo_after_genesis) return error.UnknownOpcode;
+                    continue;
+                }
+                if (shouldExecute(state)) {
+                    if (state.stack.items.len == 0) return error.UnbalancedConditionals;
+                    const cond_bytes = try popOwned(state);
+                    defer ctx.allocator.free(cond_bytes);
+                    // 4-byte little-endian equality against the transaction
+                    // version (node interpreter.cpp: ranges::equal); other
+                    // sizes evaluate as false. MINIMALIF does not apply to
+                    // the VER variants.
+                    const tx = ctx.tx orelse return error.MissingTransactionContext;
+                    var cond = false;
+                    if (cond_bytes.len == 4) {
+                        const version_le: [4]u8 = @bitCast(tx.version);
+                        cond = std.mem.eql(u8, &version_le, cond_bytes);
+                    }
+                    try state.condition_stack.append(ctx.allocator, if (op == .OP_VERIF) cond else !cond);
                 } else {
                     try state.condition_stack.append(ctx.allocator, false);
                 }
@@ -290,19 +322,130 @@ fn executeIntoState(
         }
 
         switch (op) {
-            .OP_0, .OP_PUSHDATA1, .OP_PUSHDATA2, .OP_PUSHDATA4, .OP_1NEGATE, .OP_1, .OP_2, .OP_3, .OP_4, .OP_5, .OP_6, .OP_7, .OP_8, .OP_9, .OP_10, .OP_11, .OP_12, .OP_13, .OP_14, .OP_15, .OP_16, .OP_IF, .OP_NOTIF, .OP_ELSE, .OP_ENDIF => unreachable,
+            .OP_0, .OP_PUSHDATA1, .OP_PUSHDATA2, .OP_PUSHDATA4, .OP_1NEGATE, .OP_1, .OP_2, .OP_3, .OP_4, .OP_5, .OP_6, .OP_7, .OP_8, .OP_9, .OP_10, .OP_11, .OP_12, .OP_13, .OP_14, .OP_15, .OP_16, .OP_IF, .OP_NOTIF, .OP_VERIF, .OP_VERNOTIF, .OP_ELSE, .OP_ENDIF => unreachable,
             .OP_NOP => try countOp(ctx, state),
             .OP_NOP1,
-            .OP_NOP4,
-            .OP_NOP5,
-            .OP_NOP6,
-            .OP_NOP7,
-            .OP_NOP8,
             .OP_NOP9,
             .OP_NOP10,
             => {
                 try countOp(ctx, state);
                 if (ctx.flags.discourage_upgradable_nops) return error.DiscourageUpgradableNops;
+            },
+            .OP_VER => {
+                try countOp(ctx, state);
+                if (!ctx.flags.utxo_after_chronicle) return error.UnknownOpcode;
+                const tx = ctx.tx orelse return error.MissingTransactionContext;
+                const version_le: [4]u8 = @bitCast(tx.version);
+                try pushCopy(ctx, state, &version_le);
+            },
+            .OP_SUBSTR, .OP_LEFT, .OP_RIGHT => {
+                try countOp(ctx, state);
+                if (!ctx.flags.utxo_after_chronicle) {
+                    if (ctx.flags.discourage_upgradable_nops) return error.DiscourageUpgradableNops;
+                    continue;
+                }
+                if (op == .OP_SUBSTR) {
+                    if (state.stack.items.len < 3) return error.StackUnderflow;
+                } else {
+                    if (state.stack.items.len < 2) return error.StackUnderflow;
+                }
+
+                var len_num = try popNum(ctx, state);
+                defer len_num.deinit();
+                const len_value = scriptNumToI64(&len_num) catch return error.InvalidNumberRange;
+
+                var offset_value: i64 = 0;
+                if (op == .OP_SUBSTR) {
+                    var offset_num = try popNum(ctx, state);
+                    defer offset_num.deinit();
+                    offset_value = scriptNumToI64(&offset_num) catch return error.InvalidNumberRange;
+                }
+
+                const data = try popOwned(state);
+                defer ctx.allocator.free(data);
+
+                const size: i64 = @intCast(data.len);
+                var start: i64 = 0;
+                var out_len: i64 = 0;
+                switch (op) {
+                    .OP_SUBSTR => {
+                        // Node: offset < 0 || offset >= size || len < 0 ||
+                        // len > size - offset -> INVALID_NUMBER_RANGE.
+                        // (Zero-length source errors via offset >= size.)
+                        if (offset_value < 0 or offset_value >= size or len_value < 0 or len_value > size - offset_value) {
+                            return error.InvalidNumberRange;
+                        }
+                        start = offset_value;
+                        out_len = len_value;
+                    },
+                    .OP_LEFT => {
+                        if (len_value < 0 or len_value > size) return error.InvalidNumberRange;
+                        start = 0;
+                        out_len = len_value;
+                    },
+                    .OP_RIGHT => {
+                        if (len_value < 0 or len_value > size) return error.InvalidNumberRange;
+                        start = size - len_value;
+                        out_len = len_value;
+                    },
+                    else => unreachable,
+                }
+
+                const start_index: usize = @intCast(start);
+                const length: usize = @intCast(out_len);
+                const out = try ctx.allocator.dupe(u8, data[start_index .. start_index + length]);
+                try pushOwned(ctx, state, out);
+            },
+            .OP_LSHIFTNUM, .OP_RSHIFTNUM => {
+                try countOp(ctx, state);
+                if (!ctx.flags.utxo_after_chronicle) {
+                    if (ctx.flags.discourage_upgradable_nops) return error.DiscourageUpgradableNops;
+                    continue;
+                }
+                if (state.stack.items.len < 2) return error.StackUnderflow;
+
+                var shift = try popNum(ctx, state);
+                defer shift.deinit();
+                if (shift.isNegative()) return error.InvalidNumberRange;
+
+                var value = try popNum(ctx, state);
+                defer value.deinit();
+
+                var out = blk: {
+                    if (op == .OP_LSHIFTNUM) {
+                        break :blk value.shiftLeftNum(&shift, ctx.allocator, ctx.flags.max_script_number_length) catch |err| switch (err) {
+                            error.Overflow => return error.NumberTooBig,
+                            error.InvalidEncoding => return error.InvalidNumberRange,
+                            error.NonMinimalEncoding => return error.MinimalData,
+                            error.OutOfMemory => return error.OutOfMemory,
+                        };
+                    }
+                    break :blk value.shiftRightNum(&shift, ctx.allocator) catch |err| switch (err) {
+                        error.Overflow => return error.NumberTooBig,
+                        error.InvalidEncoding => return error.InvalidNumberRange,
+                        error.NonMinimalEncoding => return error.MinimalData,
+                        error.OutOfMemory => return error.OutOfMemory,
+                    };
+                };
+                defer out.deinit();
+                try pushScriptNum(ctx, state, &out);
+            },
+            .OP_2MUL, .OP_2DIV => {
+                // Era-gated like the node's IsOpcodeDisabled: disabled
+                // everywhere except post-Chronicle. Pre-Genesis the bytes
+                // were plain bad opcodes (matching the historical surface).
+                if (!ctx.flags.utxo_after_genesis) return error.UnknownOpcode;
+                if (!ctx.flags.utxo_after_chronicle) return error.DisabledOpcode;
+                try countOp(ctx, state);
+                var value = try popNum(ctx, state);
+                defer value.deinit();
+                var two = num.ScriptNum.fromInt(2);
+                var out = if (op == .OP_2MUL)
+                    try value.add(&value, ctx.allocator)
+                else
+                    try value.divTrunc(&two, ctx.allocator);
+                defer out.deinit();
+                try pushScriptNum(ctx, state, &out);
             },
             .OP_CHECKLOCKTIMEVERIFY => {
                 try countOp(ctx, state);
@@ -321,9 +464,6 @@ fn executeIntoState(
                 }
             },
             .OP_RESERVED,
-            .OP_VER,
-            .OP_VERIF,
-            .OP_VERNOTIF,
             .OP_RESERVED1,
             .OP_RESERVED2,
             => return error.UnknownOpcode,
@@ -680,8 +820,8 @@ fn executeIntoState(
                 defer ctx.allocator.free(pubkey_bytes);
                 const sig_bytes = try popOwned(state);
                 defer ctx.allocator.free(sig_bytes);
-                const valid = try verifyChecksig(ctx, script, state.last_code_separator, sig_bytes, pubkey_bytes);
-                if (!valid and ctx.flags.null_fail and sig_bytes.len != 0) return error.NullFail;
+                const valid = try verifyChecksig(ctx, script, active_script, state.last_code_separator, sig_bytes, pubkey_bytes);
+                if (!valid and ctx.flags.null_fail and enforceNonMalleability(ctx) and sig_bytes.len != 0) return error.NullFail;
                 if (op == .OP_CHECKSIGVERIFY) {
                     if (!valid) return error.VerifyFailed;
                 } else {
@@ -690,7 +830,7 @@ fn executeIntoState(
             },
             .OP_CHECKMULTISIG, .OP_CHECKMULTISIGVERIFY => {
                 try countOp(ctx, state);
-                const valid = try verifyCheckmultisig(ctx, state, script);
+                const valid = try verifyCheckmultisig(ctx, state, script, active_script);
                 if (op == .OP_CHECKMULTISIGVERIFY) {
                     if (!valid) return error.VerifyFailed;
                 } else {
@@ -729,7 +869,7 @@ fn handlePushData(
 
     if (shouldExecute(state)) {
         const data = script.bytes[cursor.* .. cursor.* + len];
-        if (ctx.flags.minimal_data and !isMinimalPush(push_opcode, data)) return error.MinimalData;
+        if (ctx.flags.minimal_data and enforceNonMalleability(ctx) and !isMinimalPush(push_opcode, data)) return error.MinimalData;
         try pushCopy(ctx, state, data);
     }
 
@@ -738,6 +878,16 @@ fn handlePushData(
 
 fn shouldExecute(state: *const ExecutionState) bool {
     return allTrue(state.condition_stack.items);
+}
+
+/// Node EnforceNonMalleability: strict malleability rules are bypassed only
+/// when Chronicle rules are active for the block AND the spending
+/// transaction's version is > 1. When no transaction is attached (standalone
+/// script evaluation), we keep enforcing — the safe default (option A).
+pub fn enforceNonMalleability(ctx: ExecutionContext) bool {
+    if (!ctx.flags.chronicle) return true;
+    const tx = ctx.tx orelse return true;
+    return tx.version <= 1;
 }
 
 fn countOp(ctx: ExecutionContext, state: *ExecutionState) Error!void {
@@ -808,7 +958,7 @@ fn popNum(ctx: ExecutionContext, state: *ExecutionState) Error!num.ScriptNum {
 
 fn decodeScriptNum(ctx: ExecutionContext, value_bytes: []const u8) Error!num.ScriptNum {
     if (value_bytes.len > ctx.flags.max_script_number_length) return error.NumberTooBig;
-    if (ctx.flags.minimal_data) {
+    if (ctx.flags.minimal_data and enforceNonMalleability(ctx)) {
         return num.ScriptNum.decodeMinimalOwned(ctx.allocator, value_bytes) catch |err| switch (err) {
             error.NonMinimalEncoding => error.MinimalData,
             error.InvalidEncoding => error.InvalidEncoding,
@@ -821,7 +971,7 @@ fn decodeScriptNum(ctx: ExecutionContext, value_bytes: []const u8) Error!num.Scr
 
 fn decodeScriptNumWithMaxLen(ctx: ExecutionContext, value_bytes: []const u8, max_len: usize) Error!num.ScriptNum {
     if (value_bytes.len > max_len) return error.NumberTooBig;
-    if (ctx.flags.minimal_data) {
+    if (ctx.flags.minimal_data and enforceNonMalleability(ctx)) {
         return num.ScriptNum.decodeMinimalOwned(ctx.allocator, value_bytes) catch |err| switch (err) {
             error.NonMinimalEncoding => error.MinimalData,
             error.InvalidEncoding => error.InvalidEncoding,
@@ -1008,11 +1158,28 @@ fn hashOp(allocator: std.mem.Allocator, op: opcode.Opcode, data: []const u8) Err
 fn verifyChecksig(
     ctx: ExecutionContext,
     current_script: Script,
+    active_script: ActiveScript,
     last_code_separator: usize,
     sig_bytes: []const u8,
     pubkey_bytes: []const u8,
 ) Error!bool {
-    const signing_script = resolveSigningScript(ctx, current_script);
+    var signing_script = resolveSigningScript(ctx, current_script);
+    var chronicle_extension_bytes: ?[]u8 = null;
+    defer if (chronicle_extension_bytes) |owned| ctx.allocator.free(owned);
+
+    // Node Chronicle behavior: a CHECKSIG executing in the unlocking script
+    // signs from the last OP_CODESEPARATOR to the end of this script PLUS the
+    // full scriptPubKey (`scriptCode += *checksigData` when IsChronicle).
+    if (ctx.flags.chronicle and active_script == .unlocking) {
+        if (ctx.previous_locking_script) |locking| {
+            if (current_script.bytes.ptr != locking.bytes.ptr) {
+                const extended = try std.mem.concat(ctx.allocator, u8, &[_][]const u8{ current_script.bytes, locking.bytes });
+                chronicle_extension_bytes = extended;
+                signing_script = Script.init(extended);
+            }
+        }
+    }
+
     if (sig_bytes.len < 1) return false;
     try checkHashTypeEncoding(ctx, sig_bytes[sig_bytes.len - 1]);
     const legacy_normalization = !sighash.SigHashType.hasForkId(sig_bytes[sig_bytes.len - 1]);
@@ -1037,8 +1204,23 @@ fn verifyCheckmultisig(
     ctx: ExecutionContext,
     state: *ExecutionState,
     current_script: Script,
+    active_script: ActiveScript,
 ) Error!bool {
-    const signing_script = resolveSigningScript(ctx, current_script);
+    var signing_script = resolveSigningScript(ctx, current_script);
+    var chronicle_extension_bytes: ?[]u8 = null;
+    defer if (chronicle_extension_bytes) |owned| ctx.allocator.free(owned);
+
+    // Chronicle: CHECKMULTISIG in the unlocking script also appends the
+    // scriptPubKey to the signed scriptCode.
+    if (ctx.flags.chronicle and active_script == .unlocking) {
+        if (ctx.previous_locking_script) |locking| {
+            if (current_script.bytes.ptr != locking.bytes.ptr) {
+                const extended = try std.mem.concat(ctx.allocator, u8, &[_][]const u8{ current_script.bytes, locking.bytes });
+                chronicle_extension_bytes = extended;
+                signing_script = Script.init(extended);
+            }
+        }
+    }
 
     const key_count = try popIndex(ctx, state);
     if (!ctx.flags.utxo_after_genesis and key_count > 20) return error.InvalidMultisigKeyCount;
@@ -1066,7 +1248,7 @@ fn verifyCheckmultisig(
 
     const dummy = try popOwned(state);
     defer ctx.allocator.free(dummy);
-    if (ctx.flags.null_dummy and dummy.len != 0) return error.NullDummy;
+    if (ctx.flags.null_dummy and enforceNonMalleability(ctx) and dummy.len != 0) return error.NullDummy;
 
     var legacy_script_code: ?Script = null;
     var legacy_script_code_bytes: ?[]const u8 = null;
@@ -1164,12 +1346,9 @@ fn verifyChecksigWithScriptCode(
     }
     try checkHashTypeEncoding(ctx, hash_type);
 
-    const tx_signature = crypto.TxSignature.fromChecksigFormat(sig_bytes) catch |err| switch (err) {
-        error.InvalidEncoding => {
-            if (check_signature_encoding) return error.InvalidSignatureEncoding;
-            return false;
-        },
-        else => return err,
+    const tx_signature = crypto.TxSignature.fromChecksigFormat(sig_bytes) catch {
+        if (check_signature_encoding) return error.InvalidSignatureEncoding;
+        return false;
     };
     _ = (if (check_pubkey_encoding)
         crypto.PublicKey.fromSec1(pubkey_bytes)
@@ -1203,6 +1382,7 @@ fn resolveSigningScript(ctx: ExecutionContext, current_script: Script) Script {
 
 fn enforceNullFail(ctx: ExecutionContext, signatures: []const []const u8) Error!void {
     if (!ctx.flags.null_fail) return;
+    if (!enforceNonMalleability(ctx)) return;
 
     for (signatures) |candidate| {
         if (candidate.len != 0) return error.NullFail;
@@ -1222,13 +1402,18 @@ fn checkHashTypeEncoding(ctx: ExecutionContext, hash_type: u8) Error!void {
 
     const anyone_can_pay: u8 = @intCast(sighash.SigHashType.anyone_can_pay);
     const forkid: u8 = @intCast(sighash.SigHashType.forkid);
-    const base_with_forkid = hash_type & ~anyone_can_pay;
-    const has_forkid = (hash_type & forkid) != 0;
-    const base_type = if (has_forkid) (base_with_forkid ^ forkid) else base_with_forkid;
+    const chronicle_bit: u8 = @intCast(sighash.SigHashType.chronicle);
+    const has_chronicle = (hash_type & chronicle_bit) != 0;
+    const masked = hash_type & ~anyone_can_pay & ~chronicle_bit;
+    const has_forkid = (masked & forkid) != 0;
+    const base_type = if (has_forkid) (masked ^ forkid) else masked;
 
     if (base_type < sighash.SigHashType.all or base_type > sighash.SigHashType.single) {
         return error.InvalidSigHashType;
     }
+    // Node CheckSignatureEncoding (STRICTENC): the Chronicle sighash bit is
+    // only legal when the block-era Chronicle rules are active.
+    if (has_chronicle and !ctx.flags.chronicle) return error.IllegalChronicle;
     if (ctx.flags.verify_bip143_sighash and !has_forkid) return error.IllegalForkId;
     if (!ctx.flags.enable_sighash_forkid and has_forkid) return error.IllegalForkId;
     if (ctx.flags.enable_sighash_forkid and !has_forkid) return error.IllegalForkId;
@@ -1265,7 +1450,7 @@ fn checkSignatureEncoding(ctx: ExecutionContext, sig: []const u8) Error!void {
     if ((sig[s_offset] & 0x80) != 0) return error.InvalidSignatureEncoding;
     if (s_len > 1 and sig[s_offset] == 0x00 and (sig[s_offset + 1] & 0x80) == 0) return error.InvalidSignatureEncoding;
 
-    if (ctx.flags.low_s) {
+    if (ctx.flags.low_s and enforceNonMalleability(ctx)) {
         const s_bytes = sig[s_offset .. s_offset + s_len];
         if (std.mem.order(u8, trimLeadingZeroes(s_bytes), trimLeadingZeroes(&secp256k1_half_order_be)) == .gt) {
             return error.HighS;
@@ -2257,9 +2442,9 @@ test "engine stack opcodes fail at the exact underflow boundary" {
 test "engine verifies 2-of-2 checksig ordering with checkmultisig" {
     const allocator = std.testing.allocator;
 
-    var key_bytes_a = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
-    var key_bytes_b = [_]u8{0} ** 32;
+    var key_bytes_b = @as([32]u8, @splat(0));
     key_bytes_b[31] = 2;
 
     const private_key_a = try crypto.PrivateKey.fromBytes(key_bytes_a);
@@ -2275,7 +2460,7 @@ test "engine verifies 2-of-2 checksig ordering with checkmultisig" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x55} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x55)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2341,9 +2526,9 @@ test "engine verifies 2-of-2 checksig ordering with checkmultisig" {
 test "engine checkmultisig exits early before touching later invalid pubkeys" {
     const allocator = std.testing.allocator;
 
-    var key_bytes_a = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
-    var key_bytes_b = [_]u8{0} ** 32;
+    var key_bytes_b = @as([32]u8, @splat(0));
     key_bytes_b[31] = 2;
 
     const private_key_a = try crypto.PrivateKey.fromBytes(key_bytes_a);
@@ -2351,7 +2536,7 @@ test "engine checkmultisig exits early before touching later invalid pubkeys" {
     const public_key_a = try private_key_a.publicKey();
     _ = try private_key_b.publicKey();
 
-    var invalid_pubkey = [_]u8{0} ** 33;
+    var invalid_pubkey = @as([33]u8, @splat(0));
     invalid_pubkey[0] = 0x05;
 
     const locking_script_bytes = [_]u8{
@@ -2370,7 +2555,7 @@ test "engine checkmultisig exits early before touching later invalid pubkeys" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x56} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x56)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2422,8 +2607,8 @@ test "engine checkmultisig exits early before touching later invalid pubkeys" {
 test "engine checkmultisig errors on the first checked invalid pubkey under strict policy" {
     const allocator = std.testing.allocator;
 
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
 
@@ -2432,7 +2617,7 @@ test "engine checkmultisig errors on the first checked invalid pubkey under stri
     const public_key_a = try private_key_a.publicKey();
     _ = try private_key_b.publicKey();
 
-    var invalid_pubkey = [_]u8{0} ** 33;
+    var invalid_pubkey = @as([33]u8, @splat(0));
     invalid_pubkey[0] = 0x05;
 
     const locking_script_bytes = [_]u8{
@@ -2451,7 +2636,7 @@ test "engine checkmultisig errors on the first checked invalid pubkey under stri
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x57} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x57)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2506,8 +2691,8 @@ test "engine checkmultisig errors on the first checked invalid pubkey under stri
 test "engine checkmultisig errors on the first checked malformed signature under strict policy" {
     const allocator = std.testing.allocator;
 
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
 
@@ -2524,7 +2709,7 @@ test "engine checkmultisig errors on the first checked malformed signature under
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x58} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x58)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2583,7 +2768,7 @@ test "engine checkmultisig errors on the first checked malformed signature under
 test "engine checkmultisig not turns a malformed signature into true without dersig" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -2604,7 +2789,7 @@ test "engine checkmultisig not turns a malformed signature into true without der
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x58} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x58)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2658,7 +2843,7 @@ test "engine checkmultisig not turns a malformed signature into true without der
 test "engine checkmultisig not treats an empty signature as false even with dersig" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -2679,7 +2864,7 @@ test "engine checkmultisig not treats an empty signature as false even with ders
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x59} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x59)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2723,7 +2908,7 @@ test "engine checkmultisig not treats an empty signature as false even with ders
 test "engine checkmultisig treats a malformed signature as false without dersig" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -2743,7 +2928,7 @@ test "engine checkmultisig treats a malformed signature as false without dersig"
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x5a} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x5a)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2797,7 +2982,7 @@ test "engine checkmultisig treats a malformed signature as false without dersig"
 test "engine checkmultisig treats an empty signature as false even with dersig" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -2817,7 +3002,7 @@ test "engine checkmultisig treats an empty signature as false even with dersig" 
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x5b} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x5b)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2861,7 +3046,7 @@ test "engine checkmultisig treats an empty signature as false even with dersig" 
 test "engine checkmultisig ignores later hybrid pubkeys when an earlier key already satisfies the signature" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -2888,7 +3073,7 @@ test "engine checkmultisig ignores later hybrid pubkeys when an earlier key alre
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x59} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x59)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -2933,7 +3118,7 @@ test "engine checkmultisig ignores later hybrid pubkeys when an earlier key alre
 test "engine checkmultisig errors on the first checked hybrid pubkey under strict policy" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -2960,7 +3145,7 @@ test "engine checkmultisig errors on the first checked hybrid pubkey under stric
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x5a} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x5a)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3005,7 +3190,7 @@ test "engine checkmultisig errors on the first checked hybrid pubkey under stric
 test "engine checkmultisig rejects illegal forkid under legacy strict policy" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3025,7 +3210,7 @@ test "engine checkmultisig rejects illegal forkid under legacy strict policy" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x5b} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x5b)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3079,7 +3264,7 @@ test "engine checkmultisig rejects illegal forkid under legacy strict policy" {
 test "engine checkmultisig not accepts a forkid signature when forkid mode is enabled" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3100,7 +3285,7 @@ test "engine checkmultisig not accepts a forkid signature when forkid mode is en
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x5c} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x5c)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3156,7 +3341,7 @@ test "engine checkmultisig not accepts a forkid signature when forkid mode is en
 test "engine checkmultisig surfaces malformed signature before ordinary 2-of-3 failure" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3180,7 +3365,7 @@ test "engine checkmultisig surfaces malformed signature before ordinary 2-of-3 f
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x5c} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x5c)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3240,7 +3425,7 @@ test "engine checkmultisig surfaces malformed signature before ordinary 2-of-3 f
 test "engine legacy checksig removes pushed signature copies from script code when legacy mode is enabled" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3259,7 +3444,7 @@ test "engine legacy checksig removes pushed signature copies from script code wh
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x77} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x77)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3316,7 +3501,7 @@ test "engine legacy checksig removes pushed signature copies from script code wh
 test "engine enforces NULLDUMMY for checkmultisig when enabled" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3332,11 +3517,11 @@ test "engine enforces NULLDUMMY for checkmultisig when enabled" {
     const locking_script = Script.init(&locking_script_bytes);
 
     const tx = @import("../transaction/transaction.zig").Transaction{
-        .version = 2,
+        .version = 1,
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x88} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x88)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3396,7 +3581,7 @@ test "engine enforces NULLDUMMY for checkmultisig when enabled" {
 test "engine multisig nullfail only trips on non-empty failing signatures" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3412,11 +3597,11 @@ test "engine multisig nullfail only trips on non-empty failing signatures" {
     const locking_script = Script.init(&locking_script_bytes);
 
     const tx = @import("../transaction/transaction.zig").Transaction{
-        .version = 2,
+        .version = 1,
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x91} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x91)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3490,8 +3675,8 @@ test "engine multisig nullfail only trips on non-empty failing signatures" {
 test "engine multisig nullfail scans later signatures after checkmultisig-not failure" {
     const allocator = std.testing.allocator;
 
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
 
@@ -3513,11 +3698,11 @@ test "engine multisig nullfail scans later signatures after checkmultisig-not fa
     const locking_script = Script.init(&locking_script_bytes);
 
     const tx = @import("../transaction/transaction.zig").Transaction{
-        .version = 2,
+        .version = 1,
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x92} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x92)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3577,8 +3762,8 @@ test "engine multisig nullfail scans later signatures after checkmultisig-not fa
 test "engine multisig nullfail ignores a nonzero dummy when nulldummy is disabled" {
     const allocator = std.testing.allocator;
 
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
 
@@ -3604,7 +3789,7 @@ test "engine multisig nullfail ignores a nonzero dummy when nulldummy is disable
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x93} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x93)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3644,7 +3829,7 @@ test "engine multisig nullfail ignores a nonzero dummy when nulldummy is disable
 test "engine multisig nulldummy takes precedence over nullfail" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3660,11 +3845,11 @@ test "engine multisig nulldummy takes precedence over nullfail" {
     const locking_script = Script.init(&locking_script_bytes);
 
     const tx = @import("../transaction/transaction.zig").Transaction{
-        .version = 2,
+        .version = 1,
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x92} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x92)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3718,7 +3903,7 @@ test "engine multisig nulldummy takes precedence over nullfail" {
 test "engine checkmultisig not ignores nonzero dummy under nullfail when nulldummy is disabled" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3738,7 +3923,7 @@ test "engine checkmultisig not ignores nonzero dummy under nullfail when nulldum
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x94} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x94)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -3787,7 +3972,7 @@ test "engine checkmultisig not ignores nonzero dummy under nullfail when nulldum
 test "engine checkmultisig not reports nullfail before false but after nulldummy precedence" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -3807,7 +3992,7 @@ test "engine checkmultisig not reports nullfail before false but after nulldummy
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x95} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x95)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4056,7 +4241,7 @@ test "engine byte and splice ops preserve exact boundary semantics" {
 
     var cat_state = try executeLockingScriptToStateForTest(allocator, cat_script.items);
     defer cat_state.deinit(allocator);
-    try expectExactStackItems(cat_state.stack.items, &.{ "abcd" });
+    try expectExactStackItems(cat_state.stack.items, &.{"abcd"});
 
     var split_at_zero_script: std.ArrayListUnmanaged(u8) = .empty;
     defer split_at_zero_script.deinit(allocator);
@@ -4343,7 +4528,7 @@ test "engine can disable re-enabled BSV opcodes through flags" {
 
 test "engine verifies p2pkh end to end through checksig" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -4353,11 +4538,11 @@ test "engine verifies p2pkh end to end through checksig" {
     const previous_locking_script = Script.init(&previous_locking_script_bytes);
 
     var tx = @import("../transaction/transaction.zig").Transaction{
-        .version = 2,
+        .version = 1,
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4412,7 +4597,7 @@ test "engine verifies p2pkh end to end through checksig" {
 
 test "engine treats malformed pubkeys as false unless strict pubkey policy is enabled" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -4427,7 +4612,7 @@ test "engine treats malformed pubkeys as false unless strict pubkey policy is en
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x22} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x22)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4486,7 +4671,7 @@ test "engine treats malformed pubkeys as false unless strict pubkey policy is en
 
 test "engine treats malformed DER signatures as false unless DER policy is enabled" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -4501,7 +4686,7 @@ test "engine treats malformed DER signatures as false unless DER policy is enabl
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x23} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x23)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4560,7 +4745,7 @@ test "engine treats malformed DER signatures as false unless DER policy is enabl
 
 test "engine checksig accepts a multi-byte sighash encoding when dersig is disabled" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -4574,7 +4759,7 @@ test "engine checksig accepts a multi-byte sighash encoding when dersig is disab
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x23} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x23)) },
                     .index = 2,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4645,7 +4830,7 @@ test "engine checksig accepts a multi-byte sighash encoding when dersig is disab
 
 test "engine checksig accepts a valid hybrid pubkey when strict encoding is disabled" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -4665,7 +4850,7 @@ test "engine checksig accepts a valid hybrid pubkey when strict encoding is disa
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x24} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x24)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4729,7 +4914,7 @@ test "engine checksig accepts a valid hybrid pubkey when strict encoding is disa
 
 test "engine checksig not treats an invalid hybrid pubkey as false unless strict encoding is enabled" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -4750,7 +4935,7 @@ test "engine checksig not treats an invalid hybrid pubkey as false unless strict
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x25} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x25)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4826,7 +5011,7 @@ test "engine rejects missing forkid when forkid mode is enabled" {
 
 test "engine checksig not accepts a forkid signature when forkid mode is enabled" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -4841,7 +5026,7 @@ test "engine checksig not accepts a forkid signature when forkid mode is enabled
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x26} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x26)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4908,7 +5093,7 @@ test "engine checksig not matches go malformed-signature dersig matrix" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x27} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x27)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -4930,22 +5115,22 @@ test "engine checksig not matches go malformed-signature dersig matrix" {
     }{
         .{
             .name = "overly long signature",
-            .payload = &([_]u8{0} ** 74),
+            .payload = &(@as([74]u8, @splat(0))),
         },
         .{
             .name = "missing s",
             .payload = &[_]u8{
                 0x30, 0x22, 0x02, 0x20,
-            } ++ ([_]u8{0x00} ** 32),
+            } ++ (@as([32]u8, @splat(0x00))),
         },
         .{
             .name = "non-integer r",
             .payload = &[_]u8{
                 0x30, 0x24,
                 0x03, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x02, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x01,
             },
         },
@@ -4954,7 +5139,7 @@ test "engine checksig not matches go malformed-signature dersig matrix" {
             .payload = &[_]u8{
                 0x30, 0x14,
                 0x02, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x02, 0x00, 0x01,
             },
         },
@@ -4963,9 +5148,9 @@ test "engine checksig not matches go malformed-signature dersig matrix" {
             .payload = &[_]u8{
                 0x30, 0x24,
                 0x02, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x02, 0x10, 0x87,
-            } ++ ([_]u8{0x77} ** 15) ++ [_]u8{
+            } ++ (@as([15]u8, @splat(0x77))) ++ [_]u8{
                 0x01,
             },
         },
@@ -4974,9 +5159,9 @@ test "engine checksig not matches go malformed-signature dersig matrix" {
             .payload = &[_]u8{
                 0x30, 0x24,
                 0x02, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x02, 0x0a,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x01,
             },
         },
@@ -4985,9 +5170,9 @@ test "engine checksig not matches go malformed-signature dersig matrix" {
             .payload = &[_]u8{
                 0x30, 0x24,
                 0x02, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x03, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x01,
             },
         },
@@ -4997,7 +5182,7 @@ test "engine checksig not matches go malformed-signature dersig matrix" {
                 0x30, 0x14,
                 0x02, 0x00,
                 0x02, 0x10,
-            } ++ ([_]u8{0x77} ** 16) ++ [_]u8{
+            } ++ (@as([16]u8, @splat(0x77))) ++ [_]u8{
                 0x01,
             },
         },
@@ -5048,7 +5233,7 @@ test "engine checksig not matches go invalid sighash-type row in legacy mode" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x28} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x28)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -5211,14 +5396,40 @@ test "engine checksig not matches go invalid sighash-type row in legacy mode" {
 test "engine rejects reserved sighash bits under strict encoding" {
     const allocator = std.testing.allocator;
 
-    try std.testing.expectError(error.InvalidSigHashType, checkHashTypeEncoding(.{
+    // The chronicle bit without Chronicle-era flags is IllegalChronicle
+    // (node SCRIPT_ERR_ILLEGAL_CHRONICLE).
+    try std.testing.expectError(error.IllegalChronicle, checkHashTypeEncoding(.{
         .allocator = allocator,
         .flags = .{
             .enable_sighash_forkid = false,
             .verify_bip143_sighash = false,
             .strict_encoding = true,
+            .chronicle = false,
         },
     }, 0x21));
+
+    // With Chronicle-era flags the 0x21 hashtype (chronicle + ALL) is legal
+    // when forkid enforcement is off (it selects the original digest).
+    try checkHashTypeEncoding(.{
+        .allocator = allocator,
+        .flags = .{
+            .enable_sighash_forkid = false,
+            .verify_bip143_sighash = false,
+            .strict_encoding = true,
+            .chronicle = true,
+        },
+    }, 0x21);
+
+    // Truly reserved bits (beyond ALL/NONE/SINGLE + known flags) still fail.
+    try std.testing.expectError(error.InvalidSigHashType, checkHashTypeEncoding(.{
+        .allocator = allocator,
+        .flags = .{
+            .enable_sighash_forkid = true,
+            .verify_bip143_sighash = true,
+            .strict_encoding = true,
+            .chronicle = true,
+        },
+    }, 0x04));
 }
 
 test "engine can disable forkid mode explicitly for legacy sighash policy" {
@@ -5281,7 +5492,7 @@ test "engine can enforce low-S policy on DER signatures" {
 test "engine checkmultisig not enforces low-S policy" {
     const allocator = std.testing.allocator;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -5298,11 +5509,11 @@ test "engine checkmultisig not enforces low-S policy" {
     const locking_script = Script.init(&locking_script_bytes);
 
     const tx = @import("../transaction/transaction.zig").Transaction{
-        .version = 2,
+        .version = 1,
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x71} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x71)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -5387,7 +5598,7 @@ test "engine checkmultisig not enforces low-S policy" {
 
 test "engine honors op_codeseparator in checksig subscript" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -5406,7 +5617,7 @@ test "engine honors op_codeseparator in checksig subscript" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x44} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x44)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -5444,7 +5655,7 @@ test "engine honors op_codeseparator in checksig subscript" {
 
 test "engine ignores codeseparator in an unexecuted legacy branch" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -5476,7 +5687,7 @@ test "engine ignores codeseparator in an unexecuted legacy branch" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x54} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x54)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -5520,9 +5731,9 @@ test "engine ignores codeseparator in an unexecuted legacy branch" {
 
 test "engine honors chained legacy codeseparator signing boundaries" {
     const allocator = std.testing.allocator;
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
-    var key_bytes_c = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
+    var key_bytes_c = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
     key_bytes_c[31] = 3;
@@ -5582,7 +5793,7 @@ test "engine honors chained legacy codeseparator signing boundaries" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x63} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x63)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -5677,9 +5888,9 @@ test "engine honors chained legacy codeseparator signing boundaries" {
 
 test "engine codeseparator wrong final signature yields a clean false result" {
     const allocator = std.testing.allocator;
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
-    var key_bytes_c = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
+    var key_bytes_c = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
     key_bytes_c[31] = 3;
@@ -5733,7 +5944,7 @@ test "engine codeseparator wrong final signature yields a clean false result" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x64} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x64)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -5804,9 +6015,9 @@ test "engine codeseparator wrong final signature yields a clean false result" {
 
 test "engine codeseparator wrong middle signature fails at checksigverify" {
     const allocator = std.testing.allocator;
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
-    var key_bytes_c = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
+    var key_bytes_c = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
     key_bytes_c[31] = 3;
@@ -5857,7 +6068,7 @@ test "engine codeseparator wrong middle signature fails at checksigverify" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x65} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x65)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -5924,9 +6135,9 @@ test "engine codeseparator wrong middle signature fails at checksigverify" {
 
 test "engine codeseparator can ignore a leading verified prelude in legacy mode" {
     const allocator = std.testing.allocator;
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
-    var key_bytes_c = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
+    var key_bytes_c = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
     key_bytes_c[31] = 3;
@@ -5989,7 +6200,7 @@ test "engine codeseparator can ignore a leading verified prelude in legacy mode"
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x66} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x66)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -6056,9 +6267,9 @@ test "engine codeseparator can ignore a leading verified prelude in legacy mode"
 
 test "engine codeseparator can isolate middle prelude to the final signature in legacy mode" {
     const allocator = std.testing.allocator;
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
-    var key_bytes_c = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
+    var key_bytes_c = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
     key_bytes_c[31] = 3;
@@ -6123,7 +6334,7 @@ test "engine codeseparator can isolate middle prelude to the final signature in 
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x67} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x67)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -6190,9 +6401,9 @@ test "engine codeseparator can isolate middle prelude to the final signature in 
 
 test "engine codeseparator wrong first signature fails at the first checksigverify" {
     const allocator = std.testing.allocator;
-    var key_bytes_a = [_]u8{0} ** 32;
-    var key_bytes_b = [_]u8{0} ** 32;
-    var key_bytes_c = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
+    var key_bytes_b = @as([32]u8, @splat(0));
+    var key_bytes_c = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
     key_bytes_b[31] = 2;
     key_bytes_c[31] = 3;
@@ -6240,7 +6451,7 @@ test "engine codeseparator wrong first signature fails at the first checksigveri
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x68} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x68)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -6413,9 +6624,9 @@ test "engine multisig uses per-signature scriptCode normalization" {
 test "engine verifies checkmultisig through an active codeseparator in legacy and forkid modes" {
     const allocator = std.testing.allocator;
 
-    var key_bytes_a = [_]u8{0} ** 32;
+    var key_bytes_a = @as([32]u8, @splat(0));
     key_bytes_a[31] = 1;
-    var key_bytes_b = [_]u8{0} ** 32;
+    var key_bytes_b = @as([32]u8, @splat(0));
     key_bytes_b[31] = 2;
 
     const private_key_a = try crypto.PrivateKey.fromBytes(key_bytes_a);
@@ -6433,7 +6644,7 @@ test "engine verifies checkmultisig through an active codeseparator in legacy an
         .inputs = &[_]Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x66} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x66)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -6521,7 +6732,7 @@ test "engine verifies checkmultisig through an active codeseparator in legacy an
 test "engine treats equivalent pushdata forms equally at 75-byte and 255-byte boundaries" {
     const allocator = std.testing.allocator;
 
-    var data_75 = [_]u8{0x11} ** 75;
+    var data_75 = @as([75]u8, @splat(0x11));
     var script_75 = try allocator.alloc(u8, 1 + 1 + data_75.len + 1 + data_75.len + 1);
     defer allocator.free(script_75);
     var cursor_75: usize = 0;
@@ -6543,7 +6754,7 @@ test "engine treats equivalent pushdata forms equally at 75-byte and 255-byte bo
     defer result_75.deinit(allocator);
     try std.testing.expect(result_75.success);
 
-    var data_255 = [_]u8{0x22} ** 255;
+    var data_255 = @as([255]u8, @splat(0x22));
     var script_255 = try allocator.alloc(u8, 3 + data_255.len + 2 + data_255.len + 1);
     defer allocator.free(script_255);
     var cursor_255: usize = 0;
@@ -6574,7 +6785,7 @@ test "engine enforces active checklocktimeverify semantics in legacy reference m
     var inputs = [_]Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x01} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x01)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -6630,7 +6841,7 @@ test "engine enforces active checksequenceverify semantics in legacy reference m
     var inputs = [_]Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x02} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x02)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -6686,7 +6897,7 @@ test "engine rejects negative checklocktimeverify operands" {
     var inputs = [_]Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x03} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x03)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -6739,7 +6950,7 @@ test "engine enforces locktime type matching and finalized-input checks for chec
     var inputs = [_]Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x04} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x04)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -6809,7 +7020,7 @@ test "engine honors disabled-bit and version or type edge cases for checksequenc
     var inputs = [_]Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x05} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x05)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -6902,7 +7113,7 @@ test "engine rejects negative checksequenceverify operands" {
     var inputs = [_]Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x06} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x06)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -6945,7 +7156,7 @@ test "engine applies minimal-data rules to active checklocktimeverify operands" 
     var inputs = [_]Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x07} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x07)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -6983,4 +7194,320 @@ test "engine applies minimal-data rules to active checklocktimeverify operands" 
         .input_index = 0,
         .flags = flags,
     }, script));
+}
+
+// ---------------------------------------------------------------------------
+// Chronicle-era opcode tests
+// ---------------------------------------------------------------------------
+
+fn chronicleTestTx(version: i32) Transaction {
+    return .{
+        .version = version,
+        .inputs = &[_]Input{
+            .{
+                .previous_outpoint = .{
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x21)) },
+                    .index = 0,
+                },
+                .unlocking_script = Script.init(""),
+                .sequence = 0xffff_fffe,
+            },
+        },
+        .outputs = &[_]Output{
+            .{ .satoshis = 1, .locking_script = Script.init("") },
+        },
+        .lock_time = 0,
+    };
+}
+
+test "chronicle op_ver pushes the transaction version as 4-byte little endian" {
+    const allocator = std.testing.allocator;
+    const tx = chronicleTestTx(0x0102_0304);
+    const version_le = [_]u8{ 0x04, 0x03, 0x02, 0x01 };
+
+    var result = try executeScript(.{
+        .allocator = allocator,
+        .tx = &tx,
+        .input_index = 0,
+        .flags = ExecutionFlags.postChronicleBsv(),
+    }, Script.init(&[_]u8{@intFromEnum(opcode.Opcode.OP_VER)}));
+    defer result.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, &version_le, result.state.stack.items[0]);
+
+    // Pre-Chronicle OP_VER is a bad opcode.
+    try std.testing.expectError(error.UnknownOpcode, executeScript(.{
+        .allocator = allocator,
+        .tx = &tx,
+        .input_index = 0,
+        .flags = ExecutionFlags.postGenesisBsv(),
+    }, Script.init(&[_]u8{@intFromEnum(opcode.Opcode.OP_VER)})));
+
+    // No transaction attached: cannot resolve the version.
+    try std.testing.expectError(error.MissingTransactionContext, executeScript(.{
+        .allocator = allocator,
+        .input_index = 0,
+        .flags = ExecutionFlags.postChronicleBsv(),
+    }, Script.init(&[_]u8{@intFromEnum(opcode.Opcode.OP_VER)})));
+}
+
+test "chronicle op_verif compares 4-byte little endian version for equality" {
+    const allocator = std.testing.allocator;
+    const tx = chronicleTestTx(2);
+    const flags = ExecutionFlags.postChronicleBsv();
+
+    // Push 4-byte LE of version 2, then VERIF <true> ELSE <false> ENDIF.
+    const version_le = [_]u8{ 0x02, 0x00, 0x00, 0x00 };
+    const match: u8 = 0x04; // pushdata of 4 bytes
+    const script_match = [_]u8{ match, version_le[0], version_le[1], version_le[2], version_le[3] } ++
+        [_]u8{ @intFromEnum(opcode.Opcode.OP_VERIF), 0x51, @intFromEnum(opcode.Opcode.OP_ELSE), 0x00, @intFromEnum(opcode.Opcode.OP_ENDIF) };
+    var result = try executeScript(.{ .allocator = allocator, .tx = &tx, .input_index = 0, .flags = flags }, Script.init(&script_match));
+    defer result.deinit(allocator);
+    try std.testing.expect(result.state.stack.items.len > 0);
+    try std.testing.expect(isTruthy(result.state.stack.items[result.state.stack.items.len - 1]));
+
+    // Non-4-byte operand: VERIF must evaluate false (take ELSE).
+    const script_non4 = [_]u8{ 0x01, 0x02, @intFromEnum(opcode.Opcode.OP_VERIF), 0x00, @intFromEnum(opcode.Opcode.OP_ELSE), 0x51, @intFromEnum(opcode.Opcode.OP_ENDIF) };
+    var result2 = try executeScript(.{ .allocator = allocator, .tx = &tx, .input_index = 0, .flags = flags }, Script.init(&script_non4));
+    defer result2.deinit(allocator);
+    try std.testing.expect(isTruthy(result2.state.stack.items[result2.state.stack.items.len - 1]));
+
+    // VERNOTIF inverts: matching version takes the ELSE (false) branch.
+    const script_vernotif = [_]u8{ match, version_le[0], version_le[1], version_le[2], version_le[3] } ++
+        [_]u8{ @intFromEnum(opcode.Opcode.OP_VERNOTIF), 0x00, @intFromEnum(opcode.Opcode.OP_ELSE), 0x51, @intFromEnum(opcode.Opcode.OP_ENDIF) };
+    var result3 = try executeScript(.{ .allocator = allocator, .tx = &tx, .input_index = 0, .flags = flags }, Script.init(&script_vernotif));
+    defer result3.deinit(allocator);
+    try std.testing.expect(isTruthy(result3.state.stack.items[result3.state.stack.items.len - 1]));
+
+    // Pre-Chronicle: executed VERIF is a bad opcode.
+    try std.testing.expectError(error.UnknownOpcode, executeScript(.{
+        .allocator = allocator,
+        .tx = &tx,
+        .input_index = 0,
+        .flags = ExecutionFlags.postGenesisBsv(),
+    }, Script.init(&[_]u8{ @intFromEnum(opcode.Opcode.OP_VERIF), 0x51, @intFromEnum(opcode.Opcode.OP_ENDIF) })));
+}
+
+test "chronicle op_substr matches the spec BSV Blockchain vector" {
+    const allocator = std.testing.allocator;
+    // Spec example: "BSV Blockchain" OP_4 OP_5 OP_SUBSTR -> "Block"
+    const script = [_]u8{0x0e} ++ "BSV Blockchain"[0..] ++
+        [_]u8{ @intFromEnum(opcode.Opcode.OP_4), @intFromEnum(opcode.Opcode.OP_5), @intFromEnum(opcode.Opcode.OP_SUBSTR) };
+
+    var result = try executeScript(.{ .allocator = allocator, .flags = ExecutionFlags.postChronicleBsv() }, Script.init(script[0..]));
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("Block", result.state.stack.items[0]);
+
+    // Negative offset -> range error.
+    const bad_offset = [_]u8{ 0x01, 0x0e, @intFromEnum(opcode.Opcode.OP_1NEGATE), 0x01, 0x00, @intFromEnum(opcode.Opcode.OP_SUBSTR) };
+    try std.testing.expectError(error.InvalidNumberRange, executeScript(.{
+        .allocator = allocator,
+        .flags = ExecutionFlags.postChronicleBsv(),
+    }, Script.init(&bad_offset)));
+
+    // Length exceeding the source tail -> range error.
+    const len_overrun = [_]u8{ 0x02, 0x61, 0x61, @intFromEnum(opcode.Opcode.OP_1), 0x02, 0x00, 0x01, @intFromEnum(opcode.Opcode.OP_SUBSTR) };
+    try std.testing.expectError(error.InvalidNumberRange, executeScript(.{
+        .allocator = allocator,
+        .flags = ExecutionFlags.postChronicleBsv(),
+    }, Script.init(&len_overrun)));
+}
+
+test "chronicle op_left and op_right match the spec vectors" {
+    const allocator = std.testing.allocator;
+
+    // "BSV Blockchain" OP_3 OP_LEFT -> "BSV"
+    const left_script = [_]u8{0x0e} ++ "BSV Blockchain"[0..] ++
+        [_]u8{ @intFromEnum(opcode.Opcode.OP_3), @intFromEnum(opcode.Opcode.OP_LEFT) };
+    var left_result = try executeScript(.{ .allocator = allocator, .flags = ExecutionFlags.postChronicleBsv() }, Script.init(left_script[0..]));
+    defer left_result.deinit(allocator);
+    try std.testing.expectEqualStrings("BSV", left_result.state.stack.items[0]);
+
+    // "BSV Blockchain" OP_5 OP_RIGHT -> "chain"
+    const right_script = [_]u8{0x0e} ++ "BSV Blockchain"[0..] ++
+        [_]u8{ @intFromEnum(opcode.Opcode.OP_5), @intFromEnum(opcode.Opcode.OP_RIGHT) };
+    var right_result = try executeScript(.{ .allocator = allocator, .flags = ExecutionFlags.postChronicleBsv() }, Script.init(right_script[0..]));
+    defer right_result.deinit(allocator);
+    try std.testing.expectEqualStrings("chain", right_result.state.stack.items[0]);
+
+    // Zero-length is allowed for LEFT/RIGHT.
+    const zero_script = [_]u8{ 0x02, 0x61, 0x61, 0x00, @intFromEnum(opcode.Opcode.OP_LEFT) };
+    var zero_result = try executeScript(.{ .allocator = allocator, .flags = ExecutionFlags.postChronicleBsv() }, Script.init(&zero_script));
+    defer zero_result.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), zero_result.state.stack.items[0].len);
+
+    // Negative length -> range error.
+    const neg_script = [_]u8{ 0x01, 0x61, @intFromEnum(opcode.Opcode.OP_1NEGATE), @intFromEnum(opcode.Opcode.OP_LEFT) };
+    try std.testing.expectError(error.InvalidNumberRange, executeScript(.{
+        .allocator = allocator,
+        .flags = ExecutionFlags.postChronicleBsv(),
+    }, Script.init(&neg_script)));
+}
+
+test "chronicle op_lshiftnum and op_rshiftnum shift numbers preserving sign" {
+    const allocator = std.testing.allocator;
+    const flags = ExecutionFlags.postChronicleBsv();
+
+    // 20 OP_2 LSHIFTNUM -> 80
+    const lsh = [_]u8{ 0x01, 0x14, @intFromEnum(opcode.Opcode.OP_2), @intFromEnum(opcode.Opcode.OP_LSHIFTNUM) };
+    var lsh_result = try executeScript(.{ .allocator = allocator, .flags = flags }, Script.init(&lsh));
+    defer lsh_result.deinit(allocator);
+    var lsh_num = try num.ScriptNum.bin2num(allocator, lsh_result.state.stack.items[0]);
+    defer lsh_num.deinit();
+    try std.testing.expect(lsh_num.eql(&num.ScriptNum.fromInt(80)));
+
+    // 20 OP_2 RSHIFTNUM -> 5
+    const rsh = [_]u8{ 0x01, 0x14, @intFromEnum(opcode.Opcode.OP_2), @intFromEnum(opcode.Opcode.OP_RSHIFTNUM) };
+    var rsh_result = try executeScript(.{ .allocator = allocator, .flags = flags }, Script.init(&rsh));
+    defer rsh_result.deinit(allocator);
+    var rsh_num = try num.ScriptNum.bin2num(allocator, rsh_result.state.stack.items[0]);
+    defer rsh_num.deinit();
+    try std.testing.expect(rsh_num.eql(&num.ScriptNum.fromInt(5)));
+
+    // -5 OP_1 RSHIFTNUM -> -2 (truncation toward zero, sign preserved)
+    const neg_rsh = [_]u8{ 0x01, 0x85, @intFromEnum(opcode.Opcode.OP_1), @intFromEnum(opcode.Opcode.OP_RSHIFTNUM) };
+    var neg_result = try executeScript(.{ .allocator = allocator, .flags = flags }, Script.init(&neg_rsh));
+    defer neg_result.deinit(allocator);
+    var neg_num = try num.ScriptNum.bin2num(allocator, neg_result.state.stack.items[0]);
+    defer neg_num.deinit();
+    try std.testing.expect(neg_num.eql(&num.ScriptNum.fromInt(-2)));
+
+    // Negative shift count -> range error.
+    const neg_shift = [_]u8{ 0x01, 0x14, @intFromEnum(opcode.Opcode.OP_1NEGATE), @intFromEnum(opcode.Opcode.OP_LSHIFTNUM) };
+    try std.testing.expectError(error.InvalidNumberRange, executeScript(.{
+        .allocator = allocator,
+        .flags = flags,
+    }, Script.init(&neg_shift)));
+
+    // Pre-Chronicle these bytes behave as NOPs (not shifts).
+    const pre = [_]u8{ 0x01, 0x14, @intFromEnum(opcode.Opcode.OP_2), @intFromEnum(opcode.Opcode.OP_LSHIFTNUM), 0x51 };
+    var pre_result = try executeScript(.{ .allocator = allocator, .flags = ExecutionFlags.postGenesisBsv() }, Script.init(&pre));
+    defer pre_result.deinit(allocator);
+    // Stack: 20, 2 (LSHIFTNUM was a NOP), 1 -> top is 1 (truthy).
+    try std.testing.expect(isTruthy(pre_result.state.stack.items[pre_result.state.stack.items.len - 1]));
+
+    // Pre-Chronicle + discourage_upgradable_nops -> error.
+    var discouraged = ExecutionFlags.postGenesisBsv();
+    discouraged.discourage_upgradable_nops = true;
+    try std.testing.expectError(error.DiscourageUpgradableNops, executeScript(.{
+        .allocator = allocator,
+        .flags = discouraged,
+    }, Script.init(&[_]u8{ @intFromEnum(opcode.Opcode.OP_1), @intFromEnum(opcode.Opcode.OP_LSHIFTNUM) })));
+}
+
+test "chronicle op_lshiftnum enforces the script number length cap" {
+    const allocator = std.testing.allocator;
+    var capped = ExecutionFlags.postChronicleBsv();
+    capped.max_script_number_length = 4;
+
+    // 1 << 40 needs 6 bytes: exceeds the 4-byte cap.
+    const script = [_]u8{ 0x01, 0x01, 0x01, 0x28, @intFromEnum(opcode.Opcode.OP_LSHIFTNUM) };
+    try std.testing.expectError(error.NumberTooBig, executeScript(.{
+        .allocator = allocator,
+        .flags = capped,
+    }, Script.init(script[0..])));
+
+    // Within the cap: 1 << 8 = 256 needs 2 bytes.
+    const ok_script = [_]u8{ 0x01, 0x01, 0x01, 0x08, @intFromEnum(opcode.Opcode.OP_LSHIFTNUM) };
+    var result = try executeScript(.{ .allocator = allocator, .flags = capped }, Script.init(&ok_script));
+    defer result.deinit(allocator);
+    var shifted = try num.ScriptNum.bin2num(allocator, result.state.stack.items[0]);
+    defer shifted.deinit();
+    try std.testing.expect(shifted.eql(&num.ScriptNum.fromInt(256)));
+}
+
+test "chronicle op_2mul and op_2div double and halve the stack number" {
+    const allocator = std.testing.allocator;
+    const flags = ExecutionFlags.postChronicleBsv();
+
+    // 21 OP_2MUL -> 42
+    const mul = [_]u8{ 0x01, 0x15, @intFromEnum(opcode.Opcode.OP_2MUL) };
+    var mul_result = try executeScript(.{ .allocator = allocator, .flags = flags }, Script.init(&mul));
+    defer mul_result.deinit(allocator);
+    var mul_num = try num.ScriptNum.bin2num(allocator, mul_result.state.stack.items[0]);
+    defer mul_num.deinit();
+    try std.testing.expect(mul_num.eql(&num.ScriptNum.fromInt(42)));
+
+    // -7 OP_2DIV -> -3 (truncation toward zero)
+    const div = [_]u8{ 0x01, 0x87, @intFromEnum(opcode.Opcode.OP_2DIV) };
+    var div_result = try executeScript(.{ .allocator = allocator, .flags = flags }, Script.init(&div));
+    defer div_result.deinit(allocator);
+    var div_num = try num.ScriptNum.bin2num(allocator, div_result.state.stack.items[0]);
+    defer div_num.deinit();
+    try std.testing.expect(div_num.eql(&num.ScriptNum.fromInt(-3)));
+
+    // Post-genesis pre-chronicle: disabled.
+    try std.testing.expectError(error.DisabledOpcode, executeScript(.{
+        .allocator = allocator,
+        .flags = ExecutionFlags.postGenesisBsv(),
+    }, Script.init(&[_]u8{@intFromEnum(opcode.Opcode.OP_2MUL)})));
+
+    // Pre-genesis: bad opcode.
+    try std.testing.expectError(error.UnknownOpcode, executeScript(.{
+        .allocator = allocator,
+        .flags = ExecutionFlags.legacyReference(),
+    }, Script.init(&[_]u8{@intFromEnum(opcode.Opcode.OP_2MUL)})));
+}
+
+test "chronicle malleability rules relax for version > 1 transactions and stay for version 1" {
+    const allocator = std.testing.allocator;
+    const tx_v2 = chronicleTestTx(2);
+    const tx_v1 = chronicleTestTx(1);
+
+    // Dirty stack: <1> <2> — clean_stack requires exactly one item.
+    const dirty = Script.init(&[_]u8{ 0x51, 0x52 });
+
+    var relaxed = ExecutionFlags.postChronicleBsv();
+    relaxed.clean_stack = true;
+
+    // Version 2 post-Chronicle: relaxed, dirty stack passes.
+    var r2 = try executeScript(.{ .allocator = allocator, .tx = &tx_v2, .input_index = 0, .flags = relaxed }, dirty);
+    defer r2.deinit(allocator);
+
+    // Version 1: still enforced.
+    try std.testing.expectError(error.CleanStack, executeScript(.{
+        .allocator = allocator,
+        .tx = &tx_v1,
+        .input_index = 0,
+        .flags = relaxed,
+    }, dirty));
+
+    // Chronicle era flag off: enforced even at version 2.
+    var pre_chronicle = ExecutionFlags.postGenesisBsv();
+    pre_chronicle.clean_stack = true;
+    try std.testing.expectError(error.CleanStack, executeScript(.{
+        .allocator = allocator,
+        .tx = &tx_v2,
+        .input_index = 0,
+        .flags = pre_chronicle,
+    }, dirty));
+
+    // No tx attached: conservative default keeps enforcing (option A).
+    try std.testing.expectError(error.CleanStack, executeScript(.{
+        .allocator = allocator,
+        .flags = relaxed,
+    }, dirty));
+}
+
+test "chronicle minimal-if relaxes for version 2 transactions" {
+    const allocator = std.testing.allocator;
+    const tx_v2 = chronicleTestTx(2);
+    const tx_v1 = chronicleTestTx(1);
+
+    var flags = ExecutionFlags.postChronicleBsv();
+    flags.minimal_if = true;
+
+    // Push 0x05 0x00 (non-minimal true) then IF: minimal_if requires 0x01.
+    const nonminimal_if = Script.init(&[_]u8{ 0x02, 0x05, 0x00, @intFromEnum(opcode.Opcode.OP_IF), 0x51, @intFromEnum(opcode.Opcode.OP_ENDIF) });
+
+    // Version 2: relaxed.
+    var r2 = try executeScript(.{ .allocator = allocator, .tx = &tx_v2, .input_index = 0, .flags = flags }, nonminimal_if);
+    defer r2.deinit(allocator);
+
+    // Version 1: enforced.
+    try std.testing.expectError(error.MinimalIf, executeScript(.{
+        .allocator = allocator,
+        .tx = &tx_v1,
+        .input_index = 0,
+        .flags = flags,
+    }, nonminimal_if));
 }

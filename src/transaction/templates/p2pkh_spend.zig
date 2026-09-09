@@ -6,6 +6,8 @@ const sighash = @import("../sighash.zig");
 const Transaction = @import("../transaction.zig").Transaction;
 
 pub const default_scope: u32 = sighash.SigHashType.forkid | sighash.SigHashType.all;
+/// Chronicle (OTDA) scope: FORKID|CHRONICLE selects the original digest.
+pub const chronicle_scope: u32 = sighash.SigHashType.forkid | sighash.SigHashType.chronicle | sighash.SigHashType.all;
 pub const Error = error{
     InvalidSigHashType,
     PushDataTooLarge,
@@ -89,7 +91,7 @@ pub fn verifyInput(
 
 test "p2pkh spend signs and verifies a forkid input" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -104,7 +106,7 @@ test "p2pkh spend signs and verifies a forkid input" {
         .inputs = &[_]@import("../input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -131,9 +133,9 @@ test "p2pkh spend signs and verifies a forkid input" {
     try std.testing.expectEqual(@as(u8, public_key.bytes.len), unlocking_script.bytes[1 + tx_signature.der.len + 1]);
 }
 
-test "p2pkh spend rejects sighash values that do not fit the checksig byte" {
+test "p2pkh spend signs and verifies a chronicle (OTDA) input" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -148,7 +150,57 @@ test "p2pkh spend rejects sighash values that do not fit the checksig byte" {
         .inputs = &[_]@import("../input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
+                    .index = 0,
+                },
+                .unlocking_script = .{ .bytes = "" },
+                .sequence = 0xffff_fffe,
+            },
+        },
+        .outputs = &[_]@import("../output.zig").Output{
+            .{
+                .satoshis = 900,
+                .locking_script = .{ .bytes = &output_locking_script_bytes },
+            },
+        },
+        .lock_time = 0,
+    };
+
+    // FORKID|CHRONICLE (0x61) signs over the original transaction digest.
+    const chronicle_signature = try signInput(allocator, &tx, 0, previous_locking_script, 1_000, private_key, chronicle_scope);
+    try std.testing.expectEqual(@as(u8, 0x61), chronicle_signature.sighash_type);
+    try std.testing.expect(try verifyInput(allocator, &tx, 0, previous_locking_script, 1_000, public_key, chronicle_signature));
+
+    // The chronicle digest differs from the BIP143 digest for the same input.
+    const forkid_signature = try signInput(allocator, &tx, 0, previous_locking_script, 1_000, private_key, default_scope);
+    const chronicle_digest = try sighash.digest(allocator, &tx, 0, previous_locking_script, 1_000, chronicle_scope);
+    const forkid_digest = try sighash.digest(allocator, &tx, 0, previous_locking_script, 1_000, default_scope);
+    try std.testing.expect(!chronicle_digest.eql(forkid_digest));
+
+    // Cross-verification must fail: a chronicle signature does not verify
+    // against the BIP143 digest and vice versa.
+    try std.testing.expect(!(try public_key.verifyDigest256(forkid_digest.bytes, chronicle_signature.der)));
+    try std.testing.expect(!(try public_key.verifyDigest256(chronicle_digest.bytes, forkid_signature.der)));
+}
+
+test "p2pkh spend rejects sighash values that do not fit the checksig byte" {
+    const allocator = std.testing.allocator;
+    var key_bytes = @as([32]u8, @splat(0));
+    key_bytes[31] = 1;
+
+    const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
+    const public_key = try private_key.publicKey();
+    const pubkey_hash = crypto.hash.hash160(&public_key.bytes);
+    const previous_locking_script_bytes = p2pkh.encode(pubkey_hash);
+    const previous_locking_script = Script.init(&previous_locking_script_bytes);
+    const output_locking_script_bytes = p2pkh.encode(pubkey_hash);
+
+    const tx = Transaction{
+        .version = 2,
+        .inputs = &[_]@import("../input.zig").Input{
+            .{
+                .previous_outpoint = .{
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -173,7 +225,7 @@ test "p2pkh spend rejects sighash values that do not fit the checksig byte" {
 test "p2pkh interpreter verifies the signed unlocking script end to end" {
     const interpreter = @import("../../script/interpreter.zig");
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -188,7 +240,7 @@ test "p2pkh interpreter verifies the signed unlocking script end to end" {
         .inputs = &[_]@import("../input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },

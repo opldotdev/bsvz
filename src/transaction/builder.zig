@@ -282,7 +282,7 @@ test "builder addInput addOutput builds canonical unsigned transaction" {
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x11} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x11)) },
             .index = 2,
         },
         .unlocking_script = .empty(),
@@ -336,7 +336,7 @@ test "builder sign signs simple p2pkh transaction and built tx survives builder 
     const allocator = std.testing.allocator;
     var builder = Builder.init(allocator);
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
     const public_key = try private_key.publicKey();
@@ -345,7 +345,7 @@ test "builder sign signs simple p2pkh transaction and built tx survives builder 
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x22} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x22)) },
             .index = 0,
         },
         .unlocking_script = .empty(),
@@ -376,13 +376,13 @@ test "builder sign fails when input source output is missing" {
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
             .index = 0,
         },
         .unlocking_script = .empty(),
@@ -397,7 +397,7 @@ test "builder applyFee fills change output and can signUnsigned afterwards" {
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
     const public_key = try private_key.publicKey();
@@ -406,7 +406,7 @@ test "builder applyFee fills change output and can signUnsigned afterwards" {
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x44} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x44)) },
             .index = 0,
         },
         .unlocking_script = .empty(),
@@ -448,7 +448,7 @@ test "builder applyFee drops zero change output on exact spend" {
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
     const public_key = try private_key.publicKey();
@@ -457,7 +457,7 @@ test "builder applyFee drops zero change output on exact spend" {
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x55} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x55)) },
             .index = 0,
         },
         .unlocking_script = .empty(),
@@ -496,14 +496,14 @@ test "builder signInputP2pkh signs only the requested input" {
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
-    var key_a_bytes = [_]u8{0} ** 32;
+    var key_a_bytes = @as([32]u8, @splat(0));
     key_a_bytes[31] = 1;
     const key_a = try crypto.PrivateKey.fromBytes(key_a_bytes);
     const pub_a = try key_a.publicKey();
     const hash_a = crypto.hash.hash160(&pub_a.bytes);
     const script_a = script.templates.p2pkh.encode(hash_a);
 
-    var key_b_bytes = [_]u8{0} ** 32;
+    var key_b_bytes = @as([32]u8, @splat(0));
     key_b_bytes[31] = 2;
     const key_b = try crypto.PrivateKey.fromBytes(key_b_bytes);
     const pub_b = try key_b.publicKey();
@@ -512,7 +512,7 @@ test "builder signInputP2pkh signs only the requested input" {
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x66} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x66)) },
             .index = 0,
         },
         .unlocking_script = .empty(),
@@ -524,7 +524,7 @@ test "builder signInputP2pkh signs only the requested input" {
     });
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x77} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x77)) },
             .index = 1,
         },
         .unlocking_script = .empty(),
@@ -553,7 +553,7 @@ test "builder finalizeSigned applies fee then signs" {
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
     const public_key = try private_key.publicKey();
@@ -562,7 +562,7 @@ test "builder finalizeSigned applies fee then signs" {
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x88} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x88)) },
             .index = 0,
         },
         .unlocking_script = .empty(),
@@ -600,14 +600,14 @@ test "builder signAllP2pkh signs mixed-key inputs" {
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
-    var key_a_bytes = [_]u8{0} ** 32;
+    var key_a_bytes = @as([32]u8, @splat(0));
     key_a_bytes[31] = 1;
     const key_a = try crypto.PrivateKey.fromBytes(key_a_bytes);
     const pub_a = try key_a.publicKey();
     const hash_a = crypto.hash.hash160(&pub_a.bytes);
     const script_a = script.templates.p2pkh.encode(hash_a);
 
-    var key_b_bytes = [_]u8{0} ** 32;
+    var key_b_bytes = @as([32]u8, @splat(0));
     key_b_bytes[31] = 2;
     const key_b = try crypto.PrivateKey.fromBytes(key_b_bytes);
     const pub_b = try key_b.publicKey();
@@ -616,7 +616,7 @@ test "builder signAllP2pkh signs mixed-key inputs" {
 
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x90} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x90)) },
             .index = 0,
         },
         .unlocking_script = .empty(),
@@ -628,7 +628,7 @@ test "builder signAllP2pkh signs mixed-key inputs" {
     });
     try builder.addInput(.{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x91} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x91)) },
             .index = 1,
         },
         .unlocking_script = .empty(),

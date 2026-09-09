@@ -445,7 +445,7 @@ test "transaction serializes, parses, and hashes canonically" {
         .inputs = @constCast(&[_]Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x11} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x11)) },
                     .index = 3,
                 },
                 .unlocking_script = .{ .bytes = &[_]u8{ 0x51, 0x21, 0x02 } },

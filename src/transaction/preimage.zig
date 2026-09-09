@@ -127,15 +127,15 @@ test "preimage parser extracts canonical fields" {
         [_]u8{
             0x02, 0x00, 0x00, 0x00,
         } ++
-        ([_]u8{0x11} ** 32) ++
-        ([_]u8{0x22} ** 32) ++
-        ([_]u8{0x33} ** 32) ++
+        (@as([32]u8, @splat(0x11))) ++
+        (@as([32]u8, @splat(0x22))) ++
+        (@as([32]u8, @splat(0x33))) ++
         [_]u8{ 0x01, 0x00, 0x00, 0x00 } ++
         [_]u8{0x03} ++
         [_]u8{ 0x51, 0x76, 0xac } ++
         [_]u8{ 0x88, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } ++
         [_]u8{ 0xfe, 0xff, 0xff, 0xff } ++
-        ([_]u8{0x44} ** 32) ++
+        (@as([32]u8, @splat(0x44))) ++
         [_]u8{ 0x39, 0x30, 0x00, 0x00 } ++
         [_]u8{ 0x41, 0x00, 0x00, 0x00 };
 
@@ -149,9 +149,9 @@ test "preimage parser extracts canonical fields" {
     try std.testing.expectEqual(@as(u32, 0xfffffffe), preimage.sequence);
     try std.testing.expectEqual(@as(u32, 12345), preimage.lockTime());
     try std.testing.expectEqual(@as(u32, 65), preimage.sighash_type);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0x11} ** 32), &preimage.hashPrevouts().bytes);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0x44} ** 32), &preimage.hashOutputs().bytes);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0x33} ** 32), outpoint_bytes[0..32]);
+    try std.testing.expectEqualSlices(u8, &(@as([32]u8, @splat(0x11))), &preimage.hashPrevouts().bytes);
+    try std.testing.expectEqualSlices(u8, &(@as([32]u8, @splat(0x44))), &preimage.hashOutputs().bytes);
+    try std.testing.expectEqualSlices(u8, &(@as([32]u8, @splat(0x33))), outpoint_bytes[0..32]);
 }
 
 test "preimage extractor helpers match parsed values" {
@@ -159,15 +159,15 @@ test "preimage extractor helpers match parsed values" {
         [_]u8{
             0x02, 0x00, 0x00, 0x00,
         } ++
-        ([_]u8{0x11} ** 32) ++
-        ([_]u8{0x22} ** 32) ++
-        ([_]u8{0x33} ** 32) ++
+        (@as([32]u8, @splat(0x11))) ++
+        (@as([32]u8, @splat(0x22))) ++
+        (@as([32]u8, @splat(0x33))) ++
         [_]u8{ 0x02, 0x00, 0x00, 0x00 } ++
         [_]u8{0x01} ++
         [_]u8{0x51} ++
         [_]u8{ 0x88, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } ++
         [_]u8{ 0xfe, 0xff, 0xff, 0xff } ++
-        ([_]u8{0x44} ** 32) ++
+        (@as([32]u8, @splat(0x44))) ++
         [_]u8{ 0x39, 0x30, 0x00, 0x00 } ++
         [_]u8{ 0x41, 0x00, 0x00, 0x00 };
 
@@ -189,15 +189,15 @@ test "preimage parser rejects truncated and trailing bytes" {
         [_]u8{
             0x02, 0x00, 0x00, 0x00,
         } ++
-        ([_]u8{0x11} ** 32) ++
-        ([_]u8{0x22} ** 32) ++
-        ([_]u8{0x33} ** 32) ++
+        (@as([32]u8, @splat(0x11))) ++
+        (@as([32]u8, @splat(0x22))) ++
+        (@as([32]u8, @splat(0x33))) ++
         [_]u8{ 0x02, 0x00, 0x00, 0x00 } ++
         [_]u8{0x01} ++
         [_]u8{0x51} ++
         [_]u8{ 0x88, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } ++
         [_]u8{ 0xfe, 0xff, 0xff, 0xff } ++
-        ([_]u8{0x44} ** 32) ++
+        (@as([32]u8, @splat(0x44))) ++
         [_]u8{ 0x39, 0x30, 0x00, 0x00 } ++
         [_]u8{ 0x41, 0x00, 0x00, 0x00 };
 

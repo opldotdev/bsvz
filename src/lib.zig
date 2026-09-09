@@ -12,5 +12,5 @@ pub const compat = @import("compat/lib.zig");
 pub const message = @import("message/lib.zig");
 
 test {
-    @import("std").testing.refAllDeclsRecursive(@This());
+    @import("util.zig").refAllDeclsRecursive(@This());
 }

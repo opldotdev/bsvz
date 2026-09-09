@@ -23,6 +23,7 @@ pub const WhatsOnChain = struct {
     pub fn broadcast(
         self: WhatsOnChain,
         allocator: std.mem.Allocator,
+        io: std.Io,
         tx: *const transaction.Transaction,
     ) !types.BroadcastResult {
         const serialized = try tx.serialize(allocator);
@@ -51,7 +52,7 @@ pub const WhatsOnChain = struct {
             try hdrs.append(allocator, .{ .name = "Authorization", .value = auth_bearer.? });
         }
 
-        const post = try http_post.postBodyAlloc(allocator, url, hdrs.items, body);
+        const post = try http_post.postBodyAlloc(allocator, io, url, hdrs.items, body);
         defer allocator.free(post.body);
 
         if (post.status != .ok) {

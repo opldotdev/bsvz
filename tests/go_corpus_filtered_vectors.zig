@@ -1,4 +1,13 @@
 const std = @import("std");
+
+var test_threaded: ?std.Io.Threaded = null;
+
+fn testIo() std.Io {
+    if (test_threaded == null) {
+        test_threaded = std.Io.Threaded.init(std.testing.allocator, .{ .environ = .empty });
+    }
+    return test_threaded.?.io();
+}
 const bsvz = @import("bsvz");
 const reference_harness = @import("support/go_reference_harness.zig");
 
@@ -31,8 +40,17 @@ const SkipReason = enum {
     unsupported_flags_or_expectation_gap,
 };
 
+const coverage_flags = @import("external_coverage_notice.zig");
+
 fn accessOrRequire(rel_path: []const u8) !void {
-    try std.fs.cwd().access(rel_path, .{});
+    std.Io.Dir.cwd().access(testIo(), rel_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            if (coverage_flags.envRequiresExternalCoverage(std.heap.page_allocator)) return err;
+            std.debug.print("skipping: external corpus not present: {s}\n", .{rel_path});
+            return error.SkipZigTest;
+        },
+        else => return err,
+    };
 }
 
 fn containsToken(script_asm: []const u8, needle: []const u8) bool {
@@ -326,7 +344,7 @@ fn runDynamicRow(allocator: std.mem.Allocator, qualified: QualifiedRow) !void {
     var inputs = [_]bsvz.transaction.Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x42} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x42)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -394,7 +412,7 @@ test "filtered go corpus rows execute through bsvz" {
     const allocator = std.testing.allocator;
     try accessOrRequire(corpus_path);
 
-    const file = try std.fs.cwd().readFileAlloc(allocator, corpus_path, 8 * 1024 * 1024);
+    const file = try std.Io.Dir.cwd().readFileAlloc(testIo(), corpus_path, allocator, .limited(8 * 1024 * 1024));
     defer allocator.free(file);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file, .{});

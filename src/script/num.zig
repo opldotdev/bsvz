@@ -213,6 +213,109 @@ pub const ScriptNum = union(enum) {
         return smallBinaryOp(lhs, rhs, .mod_trunc, allocator) orelse try bigBinaryOp(lhs, rhs, .mod_trunc, allocator);
     }
 
+    /// OP_LSHIFTNUM: sign-preserving left shift. `shift` must be >= 0 (caller
+    /// checks). Result must serialize to at most `max_len` bytes.
+    pub fn shiftLeftNum(self: *const ScriptNum, shift: *const ScriptNum, allocator: std.mem.Allocator, max_len: usize) Error!ScriptNum {
+        return switch (self.*) {
+            .small => |value| blk: {
+                const shift_small = switch (shift.*) {
+                    .small => |shift_value| shift_value,
+                    // A big shift count applied to an i64 value: any non-zero
+                    // value overflows, zero stays zero.
+                    .big => {
+                        if (value == 0) break :blk .{ .small = 0 };
+                        return error.Overflow;
+                    },
+                };
+                if (shift_small < 0) return error.InvalidEncoding;
+
+                if (shift_small >= 64) {
+                    if (value != 0) return error.Overflow;
+                    break :blk .{ .small = 0 };
+                }
+                const shift_amount: u6 = @intCast(shift_small);
+                if (value < 0) {
+                    // Overflow iff value < minInt(i64) / 2^shift.
+                    if (shift_amount == 63) {
+                        if (value < -1) return error.Overflow;
+                    } else {
+                        const denominator = std.math.shl(i64, 1, shift_amount);
+                        if (value < @divTrunc(std.math.minInt(i64), denominator)) return error.Overflow;
+                    }
+                } else {
+                    const limit: i64 = std.math.shr(i64, std.math.maxInt(i64), shift_amount);
+                    if (value > limit) return error.Overflow;
+                }
+
+                const shifted = std.math.shl(i64, value, shift_amount);
+                if (shifted != 0 and encodedLenAbs(shifted) > max_len) return error.Overflow;
+                break :blk .{ .small = shifted };
+            },
+            .big => |value| blk: {
+                const shift_small: i64 = switch (shift.*) {
+                    .small => |shift_value| shift_value,
+                    .big => |shift_value| blk_big: {
+                        // Shift counts beyond a sane bound make the result
+                        // exceed any finite length cap.
+                        if (!shift_value.fits(i64)) return error.Overflow;
+                        const as_int = shift_value.toInt(i64) catch return error.Overflow;
+                        if (as_int >= (1 << 48)) return error.Overflow;
+                        break :blk_big as_int;
+                    },
+                };
+                if (shift_small < 0) return error.InvalidEncoding;
+                if (shift_small >= (1 << 48)) return error.Overflow;
+
+                // Pre-check: current serialized size + shift/8 bytes must fit.
+                const current_len = (value.bitCountAbs() + 7) / 8 + @intFromBool(!value.isPositive());
+                const shift_bytes: usize = @intCast(@divTrunc(shift_small, 8));
+                if (current_len + shift_bytes > max_len) return error.Overflow;
+
+                var out = try value.cloneWithDifferentAllocator(allocator);
+                errdefer out.deinit();
+                try shiftBigLeft(&out, @intCast(shift_small));
+                const out_len = scriptNumLenOfBig(&out);
+                if (out_len > max_len) return error.Overflow;
+                break :blk normalizeManaged(out);
+            },
+        };
+    }
+
+    /// OP_RSHIFTNUM: sign-preserving right shift, truncating toward zero
+    /// (-5 >> 1 == -2). `shift` must be >= 0 (caller checks).
+    pub fn shiftRightNum(self: *const ScriptNum, shift: *const ScriptNum, allocator: std.mem.Allocator) Error!ScriptNum {
+        return switch (self.*) {
+            .small => |value| blk: {
+                const shift_small = switch (shift.*) {
+                    .small => |shift_value| shift_value,
+                    .big => break :blk .{ .small = 0 },
+                };
+                if (shift_small < 0) return error.InvalidEncoding;
+
+                if (shift_small >= 64) break :blk .{ .small = 0 };
+                const shift_amount: u6 = @intCast(shift_small);
+
+                if (value >= 0) break :blk .{ .small = value >> shift_amount };
+                if (value == std.math.minInt(i64)) break :blk .{ .small = value >> shift_amount };
+                // Division semantics (truncate toward zero) for negatives.
+                break :blk .{ .small = -((-value) >> shift_amount) };
+            },
+            .big => |value| blk: {
+                const shift_small = switch (shift.*) {
+                    .small => |shift_value| shift_value,
+                    .big => break :blk .{ .small = 0 },
+                };
+                if (shift_small < 0) return error.InvalidEncoding;
+                if (shift_small >= (1 << 48)) break :blk .{ .small = 0 };
+
+                var out = try value.cloneWithDifferentAllocator(allocator);
+                errdefer out.deinit();
+                shiftBigRight(&out, @intCast(shift_small));
+                break :blk normalizeManaged(out);
+            },
+        };
+    }
+
     fn decodeInternal(allocator: std.mem.Allocator, bytes: []const u8, require_minimal: bool) Error!ScriptNum {
         if (bytes.len == 0) return .{ .small = 0 };
         if (require_minimal and !isMinimallyEncoded(bytes)) return error.NonMinimalEncoding;
@@ -292,7 +395,7 @@ pub const ScriptNum = union(enum) {
 
     fn encodeMagnitudeUnsigned(allocator: std.mem.Allocator, magnitude_value: u128) ![]u8 {
         var magnitude = magnitude_value;
-        var tmp: [16]u8 = [_]u8{0} ** 16;
+        var tmp: [16]u8 = @as([16]u8, @splat(0));
         var len: usize = 0;
         while (magnitude != 0) {
             tmp[len] = @truncate(magnitude & 0xff);
@@ -418,6 +521,52 @@ pub const ScriptNum = union(enum) {
     }
 };
 
+/// Serialized length (sign-magnitude, minimal) of an i64 in bytes.
+fn encodedLenAbs(value: i64) usize {
+    const magnitude: u64 = @intCast(if (value < 0) -@as(i128, value) else @as(i128, value));
+    if (magnitude == 0) return 0;
+    const bits = 64 - @clz(magnitude);
+    var len = (bits + 7) / 8;
+    // Extra sign byte when the last magnitude byte would set the sign bit.
+    if (bits % 8 == 0) len += 1;
+    return len;
+}
+
+/// Serialized script-number length of a big.int value (magnitude bytes plus
+/// a possible sign byte).
+fn scriptNumLenOfBig(value: *const big.Managed) usize {
+    const abs_bits = value.bitCountAbs();
+    if (abs_bits == 0) return 0;
+    const len = (abs_bits + 7) / 8;
+    // When the magnitude exactly fills the last byte's high bit, the sign
+    // needs its own byte.
+    if (abs_bits % 8 == 0) return len + 1;
+    return len;
+}
+
+/// Left-shift a managed big int by `n` bits in place. std.math.big keeps
+/// sign-magnitude here (shiftLeft operates on limbs), which matches the
+/// node's BN_lshift semantics (sign preserved, magnitude scaled).
+fn shiftBigLeft(value: *big.Managed, n: usize) Error!void {
+    if (n == 0 or value.eqlZero()) return;
+    var shifted = try value.clone();
+    defer shifted.deinit();
+    try value.shiftLeft(&shifted, n);
+}
+
+/// Right-shift a managed big int by `n` bits in place, truncating toward
+/// zero (matches BN_rshift on the magnitude with the sign kept: -5 >> 1 = -2).
+fn shiftBigRight(value: *big.Managed, n: usize) void {
+    if (n == 0 or value.eqlZero()) return;
+    const negative = !value.isPositive();
+    value.abs();
+    var mutable = value.toMutable();
+    mutable.shiftRight(mutable.toConst(), n);
+    // magnitude shift can only shrink; same limb capacity suffices
+    value.setMetadata(mutable.positive, mutable.len);
+    if (negative) value.negate();
+}
+
 test "script num roundtrip for positive and negative values" {
     const allocator = std.testing.allocator;
 
@@ -530,7 +679,7 @@ test "num2bin and bin2num match representative go-sdk operation semantics" {
     }
 
     {
-        var decoded = try ScriptNum.bin2num(allocator, &.{ 0x80 });
+        var decoded = try ScriptNum.bin2num(allocator, &.{0x80});
         defer decoded.deinit();
         try std.testing.expect(decoded.isZero());
         const reencoded = try decoded.encodeOwned(allocator);

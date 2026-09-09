@@ -1,9 +1,27 @@
 const std = @import("std");
 
+var test_threaded: ?std.Io.Threaded = null;
+
+fn testIo() std.Io {
+    if (test_threaded == null) {
+        test_threaded = std.Io.Threaded.init(std.testing.allocator, .{ .environ = .empty });
+    }
+    return test_threaded.?.io();
+}
+
 const corpus_path = "../go-sdk/script/interpreter/data/script_tests.json";
 
+const coverage_flags = @import("external_coverage_notice.zig");
+
 fn accessOrRequire(rel_path: []const u8) !void {
-    try std.fs.cwd().access(rel_path, .{});
+    std.Io.Dir.cwd().access(testIo(), rel_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            if (coverage_flags.envRequiresExternalCoverage(std.heap.page_allocator)) return err;
+            std.debug.print("skipping: external corpus not present: {s}\n", .{rel_path});
+            return error.SkipZigTest;
+        },
+        else => return err,
+    };
 }
 
 const RowAccounting = struct {
@@ -20,16 +38,17 @@ fn collectAccountedRowRefs(allocator: std.mem.Allocator) !RowAccounting {
     var counts = std.AutoHashMap(usize, usize).init(allocator);
     errdefer counts.deinit();
 
-    var dir = try std.fs.cwd().openDir("tests", .{ .iterate = true });
-    defer dir.close();
+    const io = testIo();
+    var dir = try std.Io.Dir.cwd().openDir(io, "tests", .{ .iterate = true });
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |dir_entry| {
+    while (try iter.next(io)) |dir_entry| {
         if (dir_entry.kind != .file) continue;
         if (!std.mem.startsWith(u8, dir_entry.name, "go_")) continue;
         if (!std.mem.endsWith(u8, dir_entry.name, "_vectors.zig")) continue;
 
-        const source = try dir.readFileAlloc(allocator, dir_entry.name, 512 * 1024);
+        const source = try dir.readFileAlloc(io, dir_entry.name, allocator, .limited(512 * 1024));
         defer allocator.free(source);
 
         var cursor: usize = 0;
@@ -83,7 +102,7 @@ test "all go corpus rows are explicitly accounted for" {
     var accounting = try collectAccountedRowRefs(allocator);
     defer accounting.deinit();
 
-    const file = try std.fs.cwd().readFileAlloc(allocator, corpus_path, 8 * 1024 * 1024);
+    const file = try std.Io.Dir.cwd().readFileAlloc(testIo(), corpus_path, allocator, .limited(8 * 1024 * 1024));
     defer allocator.free(file);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file, .{});

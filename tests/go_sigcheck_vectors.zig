@@ -427,11 +427,11 @@ test "go direct checksig rows: sighash policy gates" {
     });
 
     try harness.runCase(allocator, .{
-        .name = "row 2111 p2pkh rejects invalid sighash type under strictenc",
+        .name = "row 2111 p2pkh rejects chronicle sighash bit without chronicle era",
         .unlocking_hex = "4730440220647a83507454f15f85f7e24de6e70c9d7b1d4020c71d0e53f4412425487e1dde022015737290670b4ab17b6783697a88ddd581c2d9c9efe26a59ac213076fc67f53021" ++ "41" ++ "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
         .locking_hex = "76" ++ "a9" ++ "14" ++ "91b24bf9f5288532960ac687abb035127b1d28a5" ++ "88" ++ "ac",
         .flags = legacy_strict,
-        .expected = .{ .err = error.InvalidSigHashType },
+        .expected = .{ .err = error.IllegalChronicle },
     });
 
     try harness.runCase(allocator, .{
@@ -506,10 +506,10 @@ test "go direct checksig rows: exact checksig-not padding and strict sighash row
         },
         .{
             .row = 1388,
-            .name = "row 1388 p2pkh rejects invalid sighash type under strictenc",
+            .name = "row 1388 p2pkh rejects chronicle sighash bit without chronicle era",
             .unlocking_hex = "4730440220647a83507454f15f85f7e24de6e70c9d7b1d4020c71d0e53f4412425487e1dde022015737290670b4ab17b6783697a88ddd581c2d9c9efe26a59ac213076fc67f53021" ++ "41" ++ "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
             .locking_hex = "76" ++ "a9" ++ "14" ++ "91b24bf9f5288532960ac687abb035127b1d28a5" ++ "88" ++ "ac",
-            .expected = .{ .err = error.InvalidSigHashType },
+            .expected = .{ .err = error.IllegalChronicle },
         },
         .{
             .row = 1392,

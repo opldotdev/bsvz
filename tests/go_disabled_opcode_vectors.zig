@@ -84,8 +84,8 @@ test "go direct script rows: exact post-genesis disabled 2mul 2div rows" {
     legacy_flags.strict_encoding = true;
 
     try runRows(allocator, post_genesis_flags, &[_]GoRow{
-        .{ .row = 143, .name = "row 143 executed 2mul is a disabled opcode after genesis", .unlocking_hex = "51", .locking_hex = "8d", .expected = .{ .err = error.UnknownOpcode } },
-        .{ .row = 144, .name = "row 144 executed 2div is a disabled opcode after genesis", .unlocking_hex = "51", .locking_hex = "8e", .expected = .{ .err = error.UnknownOpcode } },
+        .{ .row = 143, .name = "row 143 executed 2mul is a disabled opcode after genesis", .unlocking_hex = "51", .locking_hex = "8d", .expected = .{ .err = error.DisabledOpcode } },
+        .{ .row = 144, .name = "row 144 executed 2div is a disabled opcode after genesis", .unlocking_hex = "51", .locking_hex = "8e", .expected = .{ .err = error.DisabledOpcode } },
         .{ .row = 145, .name = "row 145 untaken if 2mul branch remains ok after genesis", .unlocking_hex = "5200", .locking_hex = "638d68", .expected = .{ .success = true } },
         .{ .row = 146, .name = "row 146 untaken if 2div branch remains ok after genesis", .unlocking_hex = "5200", .locking_hex = "638e68", .expected = .{ .success = true } },
     });

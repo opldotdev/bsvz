@@ -40,4 +40,8 @@ pub const ScriptError = error{
     NumberTooBig,
     NegativeLockTime,
     UnsatisfiedLockTime,
+    MissingTransactionContext,
+    DisabledOpcode,
+    InvalidNumberRange,
+    IllegalChronicle,
 };

@@ -74,6 +74,8 @@ pub const Opcode = enum(u8) {
 
     OP_1ADD = 0x8b,
     OP_1SUB = 0x8c,
+    OP_2MUL = 0x8d,
+    OP_2DIV = 0x8e,
     OP_NEGATE = 0x8f,
     OP_ABS = 0x90,
     OP_NOT = 0x91,
@@ -112,15 +114,23 @@ pub const Opcode = enum(u8) {
     OP_NOP1 = 0xb0,
     OP_CHECKLOCKTIMEVERIFY = 0xb1,
     OP_CHECKSEQUENCEVERIFY = 0xb2,
-    OP_NOP4 = 0xb3,
-    OP_NOP5 = 0xb4,
-    OP_NOP6 = 0xb5,
-    OP_NOP7 = 0xb6,
-    OP_NOP8 = 0xb7,
+    OP_SUBSTR = 0xb3,
+    OP_LEFT = 0xb4,
+    OP_RIGHT = 0xb5,
+    OP_LSHIFTNUM = 0xb6,
+    OP_RSHIFTNUM = 0xb7,
     OP_NOP9 = 0xb8,
     OP_NOP10 = 0xb9,
 
     _,
+
+    /// Legacy aliases for the Chronicle-era renames (kept so existing callers compile).
+    /// Note: these are alias decls, not distinct enum variants; `@tagName` yields the new names.
+    pub const OP_NOP4 = Opcode.OP_SUBSTR;
+    pub const OP_NOP5 = Opcode.OP_LEFT;
+    pub const OP_NOP6 = Opcode.OP_RIGHT;
+    pub const OP_NOP7 = Opcode.OP_LSHIFTNUM;
+    pub const OP_NOP8 = Opcode.OP_RSHIFTNUM;
 
     pub fn fromByte(byte: u8) Opcode {
         return @enumFromInt(byte);
@@ -211,6 +221,8 @@ pub const Opcode = enum(u8) {
             .OP_RESERVED2 => "OP_RESERVED2",
             .OP_1ADD => "OP_1ADD",
             .OP_1SUB => "OP_1SUB",
+            .OP_2MUL => "OP_2MUL",
+            .OP_2DIV => "OP_2DIV",
             .OP_NEGATE => "OP_NEGATE",
             .OP_ABS => "OP_ABS",
             .OP_NOT => "OP_NOT",
@@ -247,11 +259,11 @@ pub const Opcode = enum(u8) {
             .OP_NOP1 => "OP_NOP1",
             .OP_CHECKLOCKTIMEVERIFY => "OP_CHECKLOCKTIMEVERIFY",
             .OP_CHECKSEQUENCEVERIFY => "OP_CHECKSEQUENCEVERIFY",
-            .OP_NOP4 => "OP_NOP4",
-            .OP_NOP5 => "OP_NOP5",
-            .OP_NOP6 => "OP_NOP6",
-            .OP_NOP7 => "OP_NOP7",
-            .OP_NOP8 => "OP_NOP8",
+            .OP_SUBSTR => "OP_SUBSTR",
+            .OP_LEFT => "OP_LEFT",
+            .OP_RIGHT => "OP_RIGHT",
+            .OP_LSHIFTNUM => "OP_LSHIFTNUM",
+            .OP_RSHIFTNUM => "OP_RSHIFTNUM",
             .OP_NOP9 => "OP_NOP9",
             .OP_NOP10 => "OP_NOP10",
             _ => "OP_UNKNOWN",
@@ -265,4 +277,40 @@ test "small integer opcodes decode correctly" {
     try std.testing.expectEqual(@as(?i64, 1), Opcode.OP_1.smallIntegerValue());
     try std.testing.expectEqual(@as(?i64, 16), Opcode.OP_16.smallIntegerValue());
     try std.testing.expectEqual(@as(?i64, null), Opcode.OP_DUP.smallIntegerValue());
+}
+
+test "Chronicle-era opcodes have correct byte values and round-trip" {
+    try std.testing.expectEqual(@as(u8, 0xb3), Opcode.OP_SUBSTR.toByte());
+    try std.testing.expectEqual(@as(u8, 0xb4), Opcode.OP_LEFT.toByte());
+    try std.testing.expectEqual(@as(u8, 0xb5), Opcode.OP_RIGHT.toByte());
+    try std.testing.expectEqual(@as(u8, 0xb6), Opcode.OP_LSHIFTNUM.toByte());
+    try std.testing.expectEqual(@as(u8, 0xb7), Opcode.OP_RSHIFTNUM.toByte());
+    try std.testing.expectEqual(@as(u8, 0x8d), Opcode.OP_2MUL.toByte());
+    try std.testing.expectEqual(@as(u8, 0x8e), Opcode.OP_2DIV.toByte());
+    try std.testing.expectEqual(@as(u8, 0x83), Opcode.OP_INVERT.toByte());
+    try std.testing.expectEqual(@as(u8, 0x95), Opcode.OP_MUL.toByte());
+    try std.testing.expectEqual(@as(u8, 0x98), Opcode.OP_LSHIFT.toByte());
+    try std.testing.expectEqual(@as(u8, 0x99), Opcode.OP_RSHIFT.toByte());
+
+    try std.testing.expectEqual(Opcode.OP_LSHIFTNUM, Opcode.fromByte(0xb6));
+    try std.testing.expectEqual(Opcode.OP_RSHIFTNUM, Opcode.fromByte(0xb7));
+    try std.testing.expectEqual(Opcode.OP_SUBSTR, Opcode.fromByte(0xb3));
+    try std.testing.expectEqual(Opcode.OP_2MUL, Opcode.fromByte(0x8d));
+    try std.testing.expectEqual(Opcode.OP_2DIV, Opcode.fromByte(0x8e));
+
+    try std.testing.expectEqualStrings("OP_LSHIFTNUM", @tagName(Opcode.OP_LSHIFTNUM));
+    try std.testing.expectEqualStrings("OP_LSHIFTNUM", Opcode.OP_LSHIFTNUM.name());
+    try std.testing.expectEqualStrings("OP_RSHIFTNUM", Opcode.OP_RSHIFTNUM.name());
+    try std.testing.expectEqualStrings("OP_SUBSTR", Opcode.OP_SUBSTR.name());
+    try std.testing.expectEqualStrings("OP_LEFT", Opcode.OP_LEFT.name());
+    try std.testing.expectEqualStrings("OP_RIGHT", Opcode.OP_RIGHT.name());
+    try std.testing.expectEqualStrings("OP_2MUL", Opcode.OP_2MUL.name());
+    try std.testing.expectEqualStrings("OP_2DIV", Opcode.OP_2DIV.name());
+
+    // Legacy aliases point at the renamed variants.
+    try std.testing.expectEqual(Opcode.OP_LSHIFTNUM, Opcode.OP_NOP7);
+    try std.testing.expectEqual(Opcode.OP_RSHIFTNUM, Opcode.OP_NOP8);
+    try std.testing.expectEqual(Opcode.OP_SUBSTR, Opcode.OP_NOP4);
+    try std.testing.expectEqual(Opcode.OP_LEFT, Opcode.OP_NOP5);
+    try std.testing.expectEqual(Opcode.OP_RIGHT, Opcode.OP_NOP6);
 }

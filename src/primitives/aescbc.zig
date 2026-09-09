@@ -133,8 +133,8 @@ fn decryptBlocks(ctx: anytype, cipher: []const u8, iv: []const u8, out: []u8) vo
 
 test "aes-cbc encrypt/decrypt roundtrip" {
     const allocator = std.testing.allocator;
-    const key = [_]u8{0x11} ** 32;
-    const iv = [_]u8{0x22} ** 16;
+    const key = @as([32]u8, @splat(0x11));
+    const iv = @as([16]u8, @splat(0x22));
     const msg = "bsvz aes cbc";
     const enc = try aesCbcEncrypt(allocator, msg, &key, &iv, false);
     defer allocator.free(enc);

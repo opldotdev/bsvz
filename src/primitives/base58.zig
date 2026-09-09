@@ -140,7 +140,7 @@ test "base58 preserves leading zero bytes" {
 
 test "base58check encodes the all-zero p2pkh payload vector" {
     const allocator = std.testing.allocator;
-    const payload = [_]u8{0x00} ++ ([_]u8{0x00} ** 20);
+    const payload = [_]u8{0x00} ++ (@as([20]u8, @splat(0x00)));
     const encoded = try encodeCheck(allocator, &payload);
     defer allocator.free(encoded);
 

@@ -7,6 +7,7 @@ This directory mirrors the Go SDK's docs layout, but keeps the Zig version conci
 - [Examples & Usage Guides](./examples/README.md)
 - [Concepts](./concepts/README.md)
 - [Low-Level Notes](./low-level/README.md)
+- [Chronicle Upgrade Support](./low-level/chronicle.md)
 
 ## Main functionality
 

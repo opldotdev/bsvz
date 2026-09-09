@@ -43,7 +43,7 @@ pub fn decode(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
 const nibble_table = buildNibbleTable();
 
 fn buildNibbleTable() [256]u8 {
-    var table = [_]u8{0xff} ** 256;
+    var table = @as([256]u8, @splat(0xff));
     for ('0'..'9' + 1) |char| table[char] = @intCast(char - '0');
     for ('a'..'f' + 1) |char| table[char] = @intCast(char - 'a' + 10);
     for ('A'..'F' + 1) |char| table[char] = @intCast(char - 'A' + 10);

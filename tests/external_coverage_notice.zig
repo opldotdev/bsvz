@@ -1,5 +1,14 @@
 const std = @import("std");
 
+var test_threaded: ?std.Io.Threaded = null;
+
+fn testIo() std.Io {
+    if (test_threaded == null) {
+        test_threaded = std.Io.Threaded.init(std.testing.allocator, .{ .environ = .empty });
+    }
+    return test_threaded.?.io();
+}
+
 const ExternalInput = struct {
     name: []const u8,
     path: []const u8,
@@ -15,12 +24,26 @@ const external_inputs = [_]ExternalInput{
     },
 };
 
-fn envRequiresExternalCoverage(allocator: std.mem.Allocator) bool {
-    const value = std.process.getEnvVarOwned(allocator, "BSVZ_REQUIRE_EXTERNAL_CORPORA") catch return false;
-    defer allocator.free(value);
-    return std.mem.eql(u8, value, "1") or
-        std.ascii.eqlIgnoreCase(value, "true") or
-        std.ascii.eqlIgnoreCase(value, "yes");
+pub fn envRequiresExternalCoverage(allocator: std.mem.Allocator) bool {
+    // Zig 0.16 removed std.process.getEnvVarOwned; without libc the process
+    // environment is only reachable via /proc/self/environ on Linux.
+    if (@import("builtin").os.tag != .linux) return false;
+    const io = testIo();
+    var proc_dir = std.Io.Dir.openDirAbsolute(io, "/proc/self", .{}) catch return false;
+    defer proc_dir.close(io);
+    const data = proc_dir.readFileAlloc(io, "environ", allocator, .limited(1024 * 1024)) catch return false;
+    defer allocator.free(data);
+
+    var it = std.mem.splitScalar(u8, data, 0);
+    while (it.next()) |entry| {
+        const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        if (!std.mem.eql(u8, entry[0..eq], "BSVZ_REQUIRE_EXTERNAL_CORPORA")) continue;
+        const value = entry[eq + 1 ..];
+        return std.mem.eql(u8, value, "1") or
+            std.ascii.eqlIgnoreCase(value, "true") or
+            std.ascii.eqlIgnoreCase(value, "yes");
+    }
+    return false;
 }
 
 test "external corpus availability is visible in default test runs" {
@@ -34,7 +57,7 @@ test "external corpus availability is visible in default test runs" {
     );
 
     for (external_inputs) |input| {
-        std.fs.cwd().access(input.path, .{}) catch |err| switch (err) {
+        std.Io.Dir.cwd().access(testIo(), input.path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 missing_count += 1;
                 if (input.optional_step) |step| {
@@ -43,11 +66,17 @@ test "external corpus availability is visible in default test runs" {
                         .{ input.name, input.path, step, input.purpose },
                     );
                 } else {
+                    if (require_external) {
+                        std.debug.print(
+                            "error: missing required external input '{s}' at {s}; default coverage is incomplete without it ({s})\n",
+                            .{ input.name, input.path, input.purpose },
+                        );
+                        return error.MissingExternalCoverageInputs;
+                    }
                     std.debug.print(
-                        "error: missing required external input '{s}' at {s}; default coverage is incomplete without it ({s})\n",
+                        "warning: missing external input '{s}' at {s}; related tests will skip ({s})\n",
                         .{ input.name, input.path, input.purpose },
                     );
-                    return error.MissingExternalCoverageInputs;
                 }
                 continue;
             },

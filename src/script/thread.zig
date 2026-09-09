@@ -216,7 +216,8 @@ pub const ScriptThread = struct {
         trace: ?*ExecutionTrace,
     ) VerificationResult {
         const use_legacy_p2sh = enable_legacy_p2sh and engine.isPayToScriptHash(locking_script);
-        if (self.checkPushOnly(unlocking_script, self.ctx.flags.sig_push_only or use_legacy_p2sh)) |result| return result;
+        const require_push_only = (self.ctx.flags.sig_push_only and engine.enforceNonMalleability(self.ctx)) or use_legacy_p2sh;
+        if (self.checkPushOnly(unlocking_script, require_push_only)) |result| return result;
 
         if (self.executePhaseDetailedImpl(.unlocking, unlocking_script, trace)) |result| return result;
 
@@ -674,7 +675,7 @@ pub fn verifyPrevoutSpendWithLegacyP2SHTraced(
 fn finalResult(ctx: ExecutionContext, state: *ExecutionState) Error!bool {
     if (state.condition_stack.items.len != 0) return error.UnbalancedConditionals;
     if (state.stack.items.len == 0) return false;
-    if (ctx.flags.clean_stack and state.stack.items.len != 1) return error.CleanStack;
+    if (ctx.flags.clean_stack and engine.enforceNonMalleability(ctx) and state.stack.items.len != 1) return error.CleanStack;
     return engine.isTruthy(state.stack.items[state.stack.items.len - 1]);
 }
 
@@ -709,7 +710,7 @@ test "thread verifyScriptsDetailed ignores stale previous locking script context
     const p2pkh = @import("templates/p2pkh.zig");
     const Input = @import("../transaction/input.zig").Input;
 
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try @import("../crypto/lib.zig").PrivateKey.fromBytes(key_bytes);
@@ -726,7 +727,7 @@ test "thread verifyScriptsDetailed ignores stale previous locking script context
         .inputs = &[_]Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x44} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x44)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(""),
@@ -876,12 +877,12 @@ test "thread verifyScriptsTraced captures opcode snapshots before terminal failu
     try std.testing.expectEqualStrings("OP_FROMALTSTACK", traced.failureStep().?.opcodeName());
     try std.testing.expectEqualDeep(VerificationOutcome{ .script_error = error.AltStackUnderflow }, traced.outcome());
 
-    var rendered: std.ArrayListUnmanaged(u8) = .empty;
-    defer rendered.deinit(allocator);
-    try traced.writeDebug(rendered.writer(allocator));
-    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "VerificationResult") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "AltStackUnderflow") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "OP_FROMALTSTACK") != null);
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try traced.writeDebug(&rendered.writer);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "VerificationResult") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "AltStackUnderflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "OP_FROMALTSTACK") != null);
 }
 
 test "thread verificationOutcome maps legacy bool-or-error results" {
@@ -892,12 +893,12 @@ test "thread verificationOutcome maps legacy bool-or-error results" {
         verificationOutcome(@as(Error!bool, error.CleanStack)),
     );
 
-    var rendered: std.ArrayListUnmanaged(u8) = .empty;
-    defer rendered.deinit(std.testing.allocator);
+    var rendered: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer rendered.deinit();
     const outcome = VerificationOutcome{ .script_error = error.CleanStack };
-    try outcome.writeDebug(rendered.writer(std.testing.allocator));
-    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "script_error(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered.items, "CleanStack") != null);
+    try outcome.writeDebug(&rendered.writer);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "script_error(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "CleanStack") != null);
 }
 
 test "thread verifyPrevoutSpendDetailed uses previous output directly" {
@@ -907,7 +908,7 @@ test "thread verifyPrevoutSpendDetailed uses previous output directly" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(&[_]u8{}),
@@ -945,7 +946,7 @@ test "thread verifyPrevoutSpendOutcome exposes compact results directly" {
         .inputs = &[_]@import("../transaction/input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(&[_]u8{}),

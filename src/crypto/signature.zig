@@ -10,7 +10,7 @@ pub const DerSignature = struct {
         if (der.len == 0 or der.len > max_der_signature_len) return error.InvalidEncoding;
 
         var out = DerSignature{
-            .bytes = [_]u8{0} ** max_der_signature_len,
+            .bytes = @as([max_der_signature_len]u8, @splat(0)),
             .len = der.len,
         };
         @memcpy(out.bytes[0..der.len], der);
@@ -25,7 +25,7 @@ pub const DerSignature = struct {
         var buf: [Scheme.Signature.der_encoded_length_max]u8 = undefined;
         const der = sig.toDer(&buf);
         var out = DerSignature{
-            .bytes = [_]u8{0} ** max_der_signature_len,
+            .bytes = @as([max_der_signature_len]u8, @splat(0)),
             .len = der.len,
         };
         @memcpy(out.bytes[0..der.len], der);

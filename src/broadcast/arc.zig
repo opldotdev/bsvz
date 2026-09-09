@@ -140,6 +140,7 @@ pub const Arc = struct {
     fn arcPost(
         self: *const Arc,
         allocator: std.mem.Allocator,
+        io: std.Io,
         tx: *const transaction.Transaction,
     ) !http_post.PostResult {
         const payload = try self.arcPayload(allocator, tx);
@@ -195,16 +196,17 @@ pub const Arc = struct {
             try hdrs.append(allocator, .{ .name = "X-WaitFor", .value = self.wait_for });
         }
 
-        return try http_post.postBodyAlloc(allocator, url, hdrs.items, payload);
+        return try http_post.postBodyAlloc(allocator, io, url, hdrs.items, payload);
     }
 
     /// POST /tx — returns parsed JSON tree (caller `deinit`s).
     pub fn arcBroadcast(
         self: *const Arc,
         allocator: std.mem.Allocator,
+        io: std.Io,
         tx: *const transaction.Transaction,
     ) !std.json.Parsed(std.json.Value) {
-        const post = try self.arcPost(allocator, tx);
+        const post = try self.arcPost(allocator, io, tx);
         defer allocator.free(post.body);
 
         if (self.verbose) {
@@ -217,9 +219,10 @@ pub const Arc = struct {
     pub fn broadcast(
         self: *const Arc,
         allocator: std.mem.Allocator,
+        io: std.Io,
         tx: *const transaction.Transaction,
     ) !types.BroadcastResult {
-        const post = self.arcPost(allocator, tx) catch |err| {
+        const post = self.arcPost(allocator, io, tx) catch |err| {
             return broadcastError(allocator, .internal_server_error, @errorName(err));
         };
         defer allocator.free(post.body);
@@ -235,6 +238,7 @@ pub const Arc = struct {
     pub fn status(
         self: *const Arc,
         allocator: std.mem.Allocator,
+        io: std.Io,
         txid_hex: []const u8,
     ) !std.json.Parsed(std.json.Value) {
         const url = try joinUrl(allocator, self.api_url, "tx");
@@ -251,7 +255,7 @@ pub const Arc = struct {
             try hdrs.append(allocator, .{ .name = "Authorization", .value = auth_bearer.? });
         }
 
-        const get = try http_post.getBodyAlloc(allocator, full, hdrs.items);
+        const get = try http_post.getBodyAlloc(allocator, io, full, hdrs.items);
         defer allocator.free(get.body);
 
         return std.json.parseFromSlice(std.json.Value, allocator, get.body, .{});
@@ -265,7 +269,7 @@ test "arc extended payload when all inputs have source" {
         .version = 1,
         .inputs = &.{.{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{1} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(1)) },
                 .index = 0,
             },
             .unlocking_script = .{ .bytes = &[_]u8{} },

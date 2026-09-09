@@ -8,7 +8,9 @@ const engine = bsvz.script.engine;
 const iterations = 10_000;
 const fixture_allocator = std.heap.page_allocator;
 
-fn bench(comptime name: []const u8, comptime run_fn: fn (std.mem.Allocator) void) void {
+const sep_line: [90]u8 = @splat('=');
+
+fn bench(io: std.Io, comptime name: []const u8, comptime run_fn: fn (std.mem.Allocator) void) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -17,14 +19,13 @@ fn bench(comptime name: []const u8, comptime run_fn: fn (std.mem.Allocator) void
         run_fn(arena.allocator());
     }
 
-    const start = std.time.nanoTimestamp();
+    const start = std.Io.Timestamp.now(io, .awake);
     for (0..iterations) |_| {
         _ = arena.reset(.retain_capacity);
         run_fn(arena.allocator());
     }
-    const end = std.time.nanoTimestamp();
-
-    const elapsed_ns: u64 = @intCast(end - start);
+    const end = std.Io.Timestamp.now(io, .awake);
+    const elapsed_ns: u64 = @intCast(end.nanoseconds - start.nanoseconds);
     const per_iter_ns = elapsed_ns / iterations;
     const per_iter_us = per_iter_ns / 1_000;
     const ops_per_sec = if (per_iter_ns > 0) 1_000_000_000 / per_iter_ns else 0;
@@ -42,7 +43,7 @@ const branching_locking = [_]u8{ 0x51, 0x63, 0x52, 0x67, 0x53, 0x68, 0x52, 0x9c 
 
 const sha256_locking = [_]u8{
     0x20,
-} ++ [_]u8{0xab} ** 32 ++ [_]u8{
+} ++ @as([32]u8, @splat(0xab)) ++ [_]u8{
     0xa8,
     0x82,
     0x01, 0x20,
@@ -51,7 +52,7 @@ const sha256_locking = [_]u8{
 
 const hash160_locking = [_]u8{
     0x14,
-} ++ [_]u8{0xcd} ** 20 ++ [_]u8{
+} ++ @as([20]u8, @splat(0xcd)) ++ [_]u8{
     0xa9,
     0x82,
     0x01, 0x14,
@@ -140,13 +141,13 @@ fn pairRunarArithmetic() ScriptPair {
     return .{ .unlocking = &runar_arithmetic_unlocking, .locking = &runar_arithmetic_locking };
 }
 
-var p2pkh_fixture_once = std.once(initP2PKHFixture);
+var p2pkh_fixture_initialized = false;
 var p2pkh_fixture: PrevoutFixture = undefined;
-var go_reference_p2pkh_fixture_once = std.once(initGoReferenceP2PKHFixture);
+var go_reference_p2pkh_fixture_initialized = false;
 var go_reference_p2pkh_fixture: ReferencePrevoutFixture = undefined;
 
 fn initP2PKHFixture() void {
-    const key_bytes = [_]u8{0} ** 31 ++ [_]u8{1};
+    const key_bytes = @as([31]u8, @splat(0)) ++ [_]u8{1};
     const private_key = bsvz.crypto.PrivateKey.fromBytes(key_bytes) catch unreachable;
     const locking_script = Script.init(&p2pkh_locking);
     const previous_satoshis: i64 = 100_000;
@@ -155,7 +156,7 @@ fn initP2PKHFixture() void {
     var outputs = fixture_allocator.alloc(bsvz.transaction.Output, 1) catch unreachable;
 
     inputs[0] = .{
-        .previous_outpoint = .{ .txid = .{ .bytes = [_]u8{0xaa} ** 32 }, .index = 0 },
+        .previous_outpoint = .{ .txid = .{ .bytes = @as([32]u8, @splat(0xaa)) }, .index = 0 },
         .unlocking_script = Script.init(""),
         .sequence = 0xffff_ffff,
     };
@@ -211,7 +212,10 @@ fn initP2PKHFixture() void {
 }
 
 fn getP2PKHFixture() *const PrevoutFixture {
-    p2pkh_fixture_once.call();
+    if (!p2pkh_fixture_initialized) {
+        initP2PKHFixture();
+        p2pkh_fixture_initialized = true;
+    }
     return &p2pkh_fixture;
 }
 
@@ -232,7 +236,10 @@ fn initGoReferenceP2PKHFixture() void {
 }
 
 fn getGoReferenceP2PKHFixture() *const ReferencePrevoutFixture {
-    go_reference_p2pkh_fixture_once.call();
+    if (!go_reference_p2pkh_fixture_initialized) {
+        initGoReferenceP2PKHFixture();
+        go_reference_p2pkh_fixture_initialized = true;
+    }
     return &go_reference_p2pkh_fixture;
 }
 
@@ -333,20 +340,24 @@ pub fn main() !void {
     _ = getP2PKHFixture();
     _ = getGoReferenceP2PKHFixture();
 
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+
     std.debug.print("\nbsvz script engine benchmarks ({d} iterations each)\n", .{iterations});
-    std.debug.print("{s}\n", .{"=" ** 90});
+    std.debug.print("{s}\n", .{sep_line});
 
-    bench("arithmetic verify (2+3==5)", benchArithmetic);
-    bench("branching verify (if/else)", benchBranching);
-    bench("OP_SHA256 verify (32-byte input)", benchSha256);
-    bench("OP_HASH160 verify (20-byte input)", benchHash160);
-    bench("stack ops verify", benchStackOps);
-    bench("runar arithmetic verify", benchRunarArithmetic);
-    bench("P2PKH sighash only", benchP2PKHSighash);
-    bench("P2PKH secp verify only", benchP2PKHSecpVerify);
-    bench("P2PKH secp verify only (parsed)", benchP2PKHSecpVerifyParsed);
-    bench("P2PKH verify (synthetic fixture)", benchP2PKHVerify);
-    bench("P2PKH verify (Go reference tx)", benchGoReferenceP2PKHVerify);
+    bench(io, "arithmetic verify (2+3==5)", benchArithmetic);
+    bench(io, "branching verify (if/else)", benchBranching);
+    bench(io, "OP_SHA256 verify (32-byte input)", benchSha256);
+    bench(io, "OP_HASH160 verify (20-byte input)", benchHash160);
+    bench(io, "stack ops verify", benchStackOps);
+    bench(io, "runar arithmetic verify", benchRunarArithmetic);
+    bench(io, "P2PKH sighash only", benchP2PKHSighash);
+    bench(io, "P2PKH secp verify only", benchP2PKHSecpVerify);
+    bench(io, "P2PKH secp verify only (parsed)", benchP2PKHSecpVerifyParsed);
+    bench(io, "P2PKH verify (synthetic fixture)", benchP2PKHVerify);
+    bench(io, "P2PKH verify (Go reference tx)", benchGoReferenceP2PKHVerify);
 
-    std.debug.print("{s}\n", .{"=" ** 90});
+    std.debug.print("{s}\n", .{sep_line});
 }

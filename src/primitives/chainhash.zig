@@ -14,7 +14,7 @@ pub const Hash = struct {
     bytes: [HashSize]u8,
 
     pub fn zero() Hash {
-        return .{ .bytes = [_]u8{0} ** HashSize };
+        return .{ .bytes = @as([HashSize]u8, @splat(0)) };
     }
 
     pub fn eql(self: Hash, other: Hash) bool {
@@ -71,7 +71,7 @@ pub fn decode(dst: *Hash, src: []const u8) DecodeError!void {
     }
 
     const decoded_len = src_len / 2;
-    var reversed: [HashSize]u8 = [_]u8{0} ** HashSize;
+    var reversed: [HashSize]u8 = @as([HashSize]u8, @splat(0));
     const out_slice = reversed[HashSize - decoded_len .. HashSize];
     if (std.fmt.hexToBytes(out_slice, buf[0..src_len])) |_| {} else |_| {
         return error.InvalidHex;

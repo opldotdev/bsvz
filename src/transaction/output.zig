@@ -113,7 +113,7 @@ test "output serialize matches legacy encoding" {
         .locking_script = .{ .bytes = &[_]u8{ 0x51, 0x51 } },
     };
 
-    var buf = [_]u8{0} ** 11;
+    var buf = @as([11]u8, @splat(0));
     const written = output.writeInto(&buf);
 
     try std.testing.expectEqual(@as(usize, 11), written);
@@ -144,8 +144,7 @@ test "output parse returns output and consumed length" {
     const allocator = std.testing.allocator;
     const raw = [_]u8{
         0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x02, 0x51, 0x51,
-        0xff,
+        0x02, 0x51, 0x51, 0xff,
     };
 
     var parsed = try Output.parse(allocator, &raw);

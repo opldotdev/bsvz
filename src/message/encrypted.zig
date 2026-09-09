@@ -1,5 +1,6 @@
 //! BRC-78 portable encrypted messages (go-sdk `message/encrypted.go`).
 const std = @import("std");
+const util = @import("../util.zig");
 const ec = @import("../primitives/ec.zig");
 const symmetric = @import("../primitives/symmetric.zig");
 
@@ -59,7 +60,7 @@ pub fn encryptAlloc(
     recipient: ec.PublicKey,
 ) ![]u8 {
     var key_id: [32]u8 = undefined;
-    std.crypto.random.bytes(&key_id);
+    util.randomBytes(&key_id);
     return encryptAllocWithKeyId(allocator, message, sender, recipient, key_id);
 }
 
@@ -111,10 +112,10 @@ pub fn decryptAlloc(allocator: std.mem.Allocator, message: []const u8, recipient
 }
 
 test "BRC-78 ecdh encrypt vs decrypt paths" {
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient_priv = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient_priv = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
     const recipient_pub = try recipient_priv.publicKey();
-    var key_id: [32]u8 = [_]u8{42} ** 32;
+    var key_id: [32]u8 = @as([32]u8, @splat(42));
     const allocator = std.testing.allocator;
     const invoice = try invoiceEncryptionAlloc(allocator, &key_id);
     defer allocator.free(invoice);
@@ -131,10 +132,10 @@ test "BRC-78 ecdh encrypt vs decrypt paths" {
 }
 
 test "BRC-78 derived signing pub matches priv" {
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient_priv = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient_priv = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
     const recipient_pub = try recipient_priv.publicKey();
-    var key_id: [32]u8 = [_]u8{42} ** 32;
+    var key_id: [32]u8 = @as([32]u8, @splat(42));
     const allocator = std.testing.allocator;
     const invoice = try invoiceEncryptionAlloc(allocator, &key_id);
     defer allocator.free(invoice);
@@ -146,8 +147,8 @@ test "BRC-78 derived signing pub matches priv" {
 
 test "BRC-78 roundtrip" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
     const recipient_pub = try recipient.publicKey();
     const msg = [_]u8{ 1, 2, 4, 8, 16, 32 };
 
@@ -162,8 +163,8 @@ test "BRC-78 roundtrip" {
 
 test "BRC-78 version mismatch" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
     const recipient_pub = try recipient.publicKey();
     const msg = [_]u8{ 1, 2, 4, 8, 16, 32 };
 
@@ -179,9 +180,9 @@ test "BRC-78 version mismatch" {
 
 test "BRC-78 wrong recipient" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
-    var wrong_s: [32]u8 = [_]u8{0} ** 32;
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
+    var wrong_s: [32]u8 = @as([32]u8, @splat(0));
     wrong_s[31] = 22;
     const wrong = try ec.PrivateKey.fromBytes(wrong_s);
     const recipient_pub = try recipient.publicKey();

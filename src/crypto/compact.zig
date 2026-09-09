@@ -1,6 +1,7 @@
 //! Bitcoin compact ECDSA signatures (65 bytes: recovery header + R + S), matching
 //! go-sdk `primitives/ec/signature.go` `SignCompact` / `RecoverCompact`.
 const std = @import("std");
+const util = @import("../util.zig");
 const hash_mod = @import("hash.zig");
 const secp256k1 = @import("secp256k1.zig");
 
@@ -41,7 +42,7 @@ pub const RecoveredPubkey = struct {
 
 /// Double-SHA256 digest -> scalar e, matching OpenSSL / go-sdk `hashToInt` for 32-byte digests.
 fn hashToIntScalar(digest: [32]u8) [32]u8 {
-    var wide: [48]u8 = [_]u8{0} ** 48;
+    var wide: [48]u8 = @as([48]u8, @splat(0));
     @memcpy(wide[wide.len - 32 ..], &digest);
     return SecpScalar.reduce48(wide, .big);
 }
@@ -174,7 +175,7 @@ test "compact sign and recover roundtrip (random keys)" {
     var rng_buf: [32]u8 = undefined;
     var c: u8 = 0;
     while (c < 16) : (c += 1) {
-        std.crypto.random.bytes(&rng_buf);
+        util.randomBytes(&rng_buf);
         const digest = hash_mod.hash256(&rng_buf).bytes;
         const sk = secp256k1.PrivateKey.fromBytes(rng_buf) catch continue;
         const compressed = (c & 1) == 1;

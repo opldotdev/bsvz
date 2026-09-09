@@ -97,7 +97,7 @@ pub const KeyShares = struct {
         errdefer allocator.free(points);
 
         var threshold: usize = 0;
-        var integrity: [8]u8 = [_]u8{0} ** 8;
+        var integrity: [8]u8 = @as([8]u8, @splat(0));
 
         for (shares, 0..) |share, idx| {
             var it = std.mem.splitScalar(u8, share, '.');
@@ -127,7 +127,7 @@ pub const KeyShares = struct {
 };
 
 fn bytesToU256(bytes: []const u8) u256 {
-    var buf: [32]u8 = [_]u8{0} ** 32;
+    var buf: [32]u8 = @as([32]u8, @splat(0));
     if (bytes.len > 32) {
         @memcpy(buf[0..32], bytes[bytes.len - 32 ..]);
     } else if (bytes.len > 0) {

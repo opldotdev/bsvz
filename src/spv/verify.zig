@@ -308,7 +308,7 @@ test "verify fee model paid vs required" {
     errdefer allocator.free(inputs);
     inputs[0] = .{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0xab} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0xab)) },
             .index = 0,
         },
         .unlocking_script = .{ .bytes = &[_]u8{0x51} },

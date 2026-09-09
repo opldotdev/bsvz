@@ -9,7 +9,7 @@ test "pushdrop encode-decode matches go-sdk field vector shapes" {
     const pushdrop = bsvz.script.templates.pushdrop;
     const Script = bsvz.script.Script;
 
-    const sk = [_]u8{0x01} ++ [_]u8{0} ** 31;
+    const sk = [_]u8{0x01} ++ @as([31]u8, @splat(0));
     const pk = try (try crypto.PrivateKey.fromBytes(sk)).publicKey();
 
     const pi = [_]u8{ 3, 1, 4, 1, 5, 9 };
@@ -67,8 +67,8 @@ test "r puzzle lock layout matches ts-sdk prefix and per-kind hash opcodes" {
     const rp = bsvz.script.templates.r_puzzle;
     const opcode = bsvz.script.opcode.Opcode;
 
-    const v20 = [_]u8{0xcd} ** 20;
-    const v32 = [_]u8{0xef} ** 32;
+    const v20 = @as([20]u8, @splat(0xcd));
+    const v32 = @as([32]u8, @splat(0xef));
 
     const raw = try rp.encodeLock(a, .raw, &[_]u8{0x42});
     defer a.free(raw);

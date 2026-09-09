@@ -17,8 +17,8 @@ pub const DRBG = struct {
         if (entropy.len < 32) return error.NotEnoughEntropy;
         var drbg = DRBG{
             .allocator = allocator,
-            .k = [_]u8{0} ** 32,
-            .v = [_]u8{0x01} ** 32,
+            .k = @as([32]u8, @splat(0)),
+            .v = @as([32]u8, @splat(0x01)),
             .reseed_counter = 1,
         };
         var seed_buf = try std.ArrayList(u8).initCapacity(allocator, entropy.len + nonce.len);
@@ -77,8 +77,8 @@ pub const DRBG = struct {
 };
 
 test "drbg generate length" {
-    var entropy = [_]u8{0x01} ** 32;
-    var nonce = [_]u8{0x02} ** 16;
+    var entropy = @as([32]u8, @splat(0x01));
+    var nonce = @as([16]u8, @splat(0x02));
     var d = try DRBG.init(&entropy, &nonce, std.testing.allocator);
     const out = try d.generate(std.testing.allocator, 64);
     defer std.testing.allocator.free(out);
