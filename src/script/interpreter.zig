@@ -12,6 +12,8 @@ pub const VerificationTerminal = thread.VerificationTerminal;
 pub const VerificationOutcome = thread.VerificationOutcome;
 pub const VerificationResult = thread.VerificationResult;
 pub const TracedVerificationResult = thread.TracedVerificationResult;
+pub const ExecutionContext = thread.ExecutionContext;
+pub const ExecutionFlags = thread.ExecutionFlags;
 
 pub const P2pkhSpendContext = struct {
     allocator: std.mem.Allocator,
@@ -21,6 +23,17 @@ pub const P2pkhSpendContext = struct {
     unlocking_script: Script,
     locking_script: Script,
     enable_legacy_p2sh: bool = false,
+    /// Script-verification policy. Defaults to current mainnet rules
+    /// (post-Chronicle, activated 7 April 2026); pass
+    /// `ExecutionFlags.postGenesisBsv()` to opt out and verify a
+    /// pre-Chronicle script instead.
+    flags: ExecutionFlags = .{},
+
+    fn executionContext(ctx: P2pkhSpendContext) ExecutionContext {
+        var result = ExecutionContext.forSpend(ctx.allocator, ctx.tx, ctx.input_index, ctx.previous_satoshis);
+        result.flags = ctx.flags;
+        return result;
+    }
 };
 
 pub const PrevoutSpendContext = struct {
@@ -30,6 +43,17 @@ pub const PrevoutSpendContext = struct {
     previous_output: Output,
     unlocking_script: Script,
     enable_legacy_p2sh: bool = false,
+    /// Script-verification policy. Defaults to current mainnet rules
+    /// (post-Chronicle, activated 7 April 2026); pass
+    /// `ExecutionFlags.postGenesisBsv()` to opt out and verify a
+    /// pre-Chronicle script instead.
+    flags: ExecutionFlags = .{},
+
+    fn executionContext(ctx: PrevoutSpendContext) ExecutionContext {
+        var result = ExecutionContext.forPrevoutSpend(ctx.allocator, ctx.tx, ctx.input_index, ctx.previous_output);
+        result.flags = ctx.flags;
+        return result;
+    }
 };
 
 pub fn verify(ctx: P2pkhSpendContext) Error!bool {
@@ -40,7 +64,7 @@ pub fn verify(ctx: P2pkhSpendContext) Error!bool {
 
 pub fn verifyOutcome(ctx: P2pkhSpendContext) VerificationOutcome {
     return thread.verifyExecutableScriptsWithLegacyP2SHOutcome(
-        .forSpend(ctx.allocator, ctx.tx, ctx.input_index, ctx.previous_satoshis),
+        ctx.executionContext(),
         ctx.unlocking_script,
         ctx.locking_script,
         ctx.enable_legacy_p2sh,
@@ -49,7 +73,7 @@ pub fn verifyOutcome(ctx: P2pkhSpendContext) VerificationOutcome {
 
 pub fn verifyDetailed(ctx: P2pkhSpendContext) VerificationResult {
     return thread.verifyExecutableScriptsWithLegacyP2SHDetailed(
-        .forSpend(ctx.allocator, ctx.tx, ctx.input_index, ctx.previous_satoshis),
+        ctx.executionContext(),
         ctx.unlocking_script,
         ctx.locking_script,
         ctx.enable_legacy_p2sh,
@@ -58,7 +82,7 @@ pub fn verifyDetailed(ctx: P2pkhSpendContext) VerificationResult {
 
 pub fn verifyTraced(ctx: P2pkhSpendContext) TracedVerificationResult {
     return thread.verifyExecutableScriptsWithLegacyP2SHTraced(
-        .forSpend(ctx.allocator, ctx.tx, ctx.input_index, ctx.previous_satoshis),
+        ctx.executionContext(),
         ctx.unlocking_script,
         ctx.locking_script,
         ctx.enable_legacy_p2sh,
@@ -66,45 +90,37 @@ pub fn verifyTraced(ctx: P2pkhSpendContext) TracedVerificationResult {
 }
 
 pub fn verifyPrevout(ctx: PrevoutSpendContext) Error!bool {
-    return thread.verifyPrevoutSpendWithLegacyP2SH(
-        ctx.allocator,
-        ctx.tx,
-        ctx.input_index,
-        ctx.previous_output,
+    return thread.verifyExecutableScriptsWithLegacyP2SH(
+        ctx.executionContext(),
         ctx.unlocking_script,
+        ctx.previous_output.locking_script,
         ctx.enable_legacy_p2sh,
     );
 }
 
 pub fn verifyPrevoutOutcome(ctx: PrevoutSpendContext) VerificationOutcome {
-    return thread.verifyPrevoutSpendWithLegacyP2SHOutcome(
-        ctx.allocator,
-        ctx.tx,
-        ctx.input_index,
-        ctx.previous_output,
+    return thread.verifyExecutableScriptsWithLegacyP2SHOutcome(
+        ctx.executionContext(),
         ctx.unlocking_script,
+        ctx.previous_output.locking_script,
         ctx.enable_legacy_p2sh,
     );
 }
 
 pub fn verifyPrevoutDetailed(ctx: PrevoutSpendContext) VerificationResult {
-    return thread.verifyPrevoutSpendWithLegacyP2SHDetailed(
-        ctx.allocator,
-        ctx.tx,
-        ctx.input_index,
-        ctx.previous_output,
+    return thread.verifyExecutableScriptsWithLegacyP2SHDetailed(
+        ctx.executionContext(),
         ctx.unlocking_script,
+        ctx.previous_output.locking_script,
         ctx.enable_legacy_p2sh,
     );
 }
 
 pub fn verifyPrevoutTraced(ctx: PrevoutSpendContext) TracedVerificationResult {
-    return thread.verifyPrevoutSpendWithLegacyP2SHTraced(
-        ctx.allocator,
-        ctx.tx,
-        ctx.input_index,
-        ctx.previous_output,
+    return thread.verifyExecutableScriptsWithLegacyP2SHTraced(
+        ctx.executionContext(),
         ctx.unlocking_script,
+        ctx.previous_output.locking_script,
         ctx.enable_legacy_p2sh,
     );
 }
@@ -116,7 +132,7 @@ test "interpreter verifyDetailed exposes structured false results" {
         .inputs = &[_]Input{
             .{
                 .previous_outpoint = OutPoint{
-                    .txid = .{ .bytes = [_]u8{0} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(&[_]u8{}),
@@ -156,7 +172,7 @@ test "interpreter verifyOutcome exposes compact false results" {
         .inputs = &[_]Input{
             .{
                 .previous_outpoint = OutPoint{
-                    .txid = .{ .bytes = [_]u8{0} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(&[_]u8{}),
@@ -191,7 +207,7 @@ test "interpreter verifyPrevoutDetailed exposes structured false results" {
         .inputs = &[_]Input{
             .{
                 .previous_outpoint = OutPoint{
-                    .txid = .{ .bytes = [_]u8{0} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(&[_]u8{}),
@@ -230,7 +246,7 @@ test "interpreter verifyPrevoutOutcome exposes compact false results" {
         .inputs = &[_]Input{
             .{
                 .previous_outpoint = OutPoint{
-                    .txid = .{ .bytes = [_]u8{0} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(&[_]u8{}),
@@ -275,7 +291,7 @@ test "interpreter verifyPrevout can explicitly execute legacy P2SH redeem script
         .inputs = &[_]Input{
             .{
                 .previous_outpoint = OutPoint{
-                    .txid = .{ .bytes = [_]u8{0x11} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x11)) },
                     .index = 0,
                 },
                 .unlocking_script = Script.init(&unlocking_script_bytes),

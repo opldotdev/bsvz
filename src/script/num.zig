@@ -213,6 +213,68 @@ pub const ScriptNum = union(enum) {
         return smallBinaryOp(lhs, rhs, .mod_trunc, allocator) orelse try bigBinaryOp(lhs, rhs, .mod_trunc, allocator);
     }
 
+    /// `lhs << bits`, exact and sign-preserving, with no width limit of its
+    /// own (the caller enforces MaxScriptNumLength, see engine.zig's
+    /// OP_LSHIFTNUM handling). This is a magnitude shift that keeps the
+    /// sign, matching Zig's `big.int.Mutable.shiftLeft` and SV Node's
+    /// bignum path for OP_LSHIFTNUM: `bsv::bint::operator<<=` (big_int.cpp)
+    /// is OpenSSL `BN_lshift` on a sign-magnitude BIGNUM, and
+    /// `CScriptNum::operator<<=`'s bint branch (script_num.cpp) wraps it
+    /// with the MaxScriptNumLength checks: -1 << 7 == -128, not some
+    /// two's-complement wraparound.
+    pub fn shiftLeft(self: *const ScriptNum, bits: usize, allocator: std.mem.Allocator) !ScriptNum {
+        if (self.isZero() or bits == 0) return self.clone(allocator);
+        var value = try self.toManaged(allocator);
+        defer value.deinit();
+        var result = try big.Managed.init(allocator);
+        errdefer result.deinit();
+        try result.shiftLeft(&value, bits);
+        return normalizeManaged(result);
+    }
+
+    /// `lhs >> bits`, rounding toward zero (a magnitude shift that keeps
+    /// the sign): -5 >> 1 == -2, -1 >> n == 0 for any n >= 1. This matches
+    /// SV Node's bignum path for OP_RSHIFTNUM: `bsv::bint::operator>>=`
+    /// (big_int.cpp) is OpenSSL `BN_rshift` on a sign-magnitude BIGNUM, so
+    /// it shifts the magnitude only and leaves the sign untouched, i.e.
+    /// "Mathematical division by 2^bit_shift, rounding toward zero" (the
+    /// same comment `CScriptNum::operator>>=` uses for its int64 path in
+    /// script_num.cpp, which OP_RSHIFTNUM never actually reaches since the
+    /// interpreter always decodes both operands as bignums for that
+    /// opcode). go-sdk's `big.Int.Rsh` in operations.go `opcodeShiftNum`
+    /// instead performs a two's-complement arithmetic shift, rounding
+    /// toward negative infinity (-5 >> 1 == -3); that is a go-sdk bug being
+    /// fixed upstream in bsv-blockchain/go-sdk PR #370
+    /// (fix/rshiftnum-round-toward-zero). @bsv/sdk's Spend.ts already
+    /// rounds toward zero and agrees with SV Node here.
+    pub fn shiftRight(self: *const ScriptNum, bits: usize, allocator: std.mem.Allocator) !ScriptNum {
+        if (self.isZero() or bits == 0) return self.clone(allocator);
+        if (!self.isNegative()) {
+            var value = try self.toManaged(allocator);
+            defer value.deinit();
+            var result = try big.Managed.init(allocator);
+            errdefer result.deinit();
+            try result.shiftRight(&value, bits);
+            return normalizeManaged(result);
+        }
+
+        // Negative: shift the magnitude only, then reapply the sign, so
+        // this rounds toward zero instead of following Zig's
+        // `big.int.Mutable.shiftRight`, which (like go-sdk) emulates a
+        // two's-complement arithmetic shift and rounds toward negative
+        // infinity.
+        var magnitude = try self.abs(allocator);
+        defer magnitude.deinit();
+        var value = try magnitude.toManaged(allocator);
+        defer value.deinit();
+        var result = try big.Managed.init(allocator);
+        errdefer result.deinit();
+        try result.shiftRight(&value, bits);
+        var shifted = try normalizeManaged(result);
+        defer shifted.deinit();
+        return shifted.negate(allocator);
+    }
+
     fn decodeInternal(allocator: std.mem.Allocator, bytes: []const u8, require_minimal: bool) Error!ScriptNum {
         if (bytes.len == 0) return .{ .small = 0 };
         if (require_minimal and !isMinimallyEncoded(bytes)) return error.NonMinimalEncoding;
@@ -292,7 +354,7 @@ pub const ScriptNum = union(enum) {
 
     fn encodeMagnitudeUnsigned(allocator: std.mem.Allocator, magnitude_value: u128) ![]u8 {
         var magnitude = magnitude_value;
-        var tmp: [16]u8 = [_]u8{0} ** 16;
+        var tmp: [16]u8 = @as([16]u8, @splat(0));
         var len: usize = 0;
         while (magnitude != 0) {
             tmp[len] = @truncate(magnitude & 0xff);
@@ -530,7 +592,7 @@ test "num2bin and bin2num match representative go-sdk operation semantics" {
     }
 
     {
-        var decoded = try ScriptNum.bin2num(allocator, &.{ 0x80 });
+        var decoded = try ScriptNum.bin2num(allocator, &.{0x80});
         defer decoded.deinit();
         try std.testing.expect(decoded.isZero());
         const reencoded = try decoded.encodeOwned(allocator);
@@ -624,6 +686,118 @@ test "script num mod matches representative go-sdk negative remainder vectors" {
         var rhs = ScriptNum.fromInt(case.right);
         defer rhs.deinit();
         var out = try lhs.mod(&rhs, allocator);
+        defer out.deinit();
+        try std.testing.expect(out.eql(&ScriptNum.fromInt(case.expected)));
+    }
+}
+
+// SV Node's OP_RSHIFTNUM reference (script_num.cpp CScriptNum::operator>>=,
+// bint branch; big_int.cpp bsv::bint::operator>>= is OpenSSL BN_rshift on a
+// sign-magnitude BIGNUM) rounds a negative right shift toward zero, not
+// toward negative infinity the way go-sdk's big.Int.Rsh does. These cases
+// pin that: -5 >> 1 == -2 (not -3), -1 >> 1 == 0 (not -1), and the exact
+// case -6 >> 1 == -3, where both rules agree.
+test "script num shiftRight rounds negative results toward zero like SV Node, not floor like go-sdk" {
+    const allocator = std.testing.allocator;
+
+    const Case = struct {
+        value: i64,
+        bits: usize,
+        expected: i64,
+    };
+
+    const cases = [_]Case{
+        .{ .value = -5, .bits = 1, .expected = -2 },
+        .{ .value = -1, .bits = 1, .expected = 0 },
+        .{ .value = -6, .bits = 1, .expected = -3 },
+        .{ .value = -256, .bits = 1, .expected = -128 },
+        .{ .value = -1, .bits = 200, .expected = 0 },
+        .{ .value = 5, .bits = 1, .expected = 2 },
+    };
+
+    inline for (cases) |case| {
+        var value = ScriptNum.fromInt(case.value);
+        defer value.deinit();
+        var out = try value.shiftRight(case.bits, allocator);
+        defer out.deinit();
+        try std.testing.expect(out.eql(&ScriptNum.fromInt(case.expected)));
+    }
+}
+
+test "script num shiftRight on a large negative bignum rounds toward zero" {
+    const allocator = std.testing.allocator;
+
+    // -(2^70 + 5) >> 3: bits 0 and 2 sit below the shift, bit 70 does not,
+    // so the magnitude shift discards them cleanly and the sign carries
+    // through unchanged: -(2^70 + 5) >> 3 == -(2^67).
+    var value = try ScriptNum.fromValue(allocator, -(@as(i128, 1) << 70) - 5);
+    defer value.deinit();
+    var out = try value.shiftRight(3, allocator);
+    defer out.deinit();
+
+    var expected = try ScriptNum.fromValue(allocator, -(@as(i128, 1) << 67));
+    defer expected.deinit();
+    try std.testing.expect(out.eql(&expected));
+}
+
+test "script num shiftRight of INT64_MIN by 1 halves exactly" {
+    const allocator = std.testing.allocator;
+
+    // INT64_MIN == -2^63 is exactly divisible by every power of two, so the
+    // toward-zero and floor rules agree here; SV Node's int64 fast path
+    // special-cases this to avoid negating INT64_MIN (undefined in
+    // two's-complement arithmetic), but that path never actually runs for
+    // OP_RSHIFTNUM since the interpreter always decodes bignums for it, and
+    // the sign-magnitude bignum shift used here has no such hazard.
+    var value = ScriptNum.fromInt(std.math.minInt(i64));
+    defer value.deinit();
+    var out = try value.shiftRight(1, allocator);
+    defer out.deinit();
+
+    var expected = try ScriptNum.fromValue(allocator, @as(i128, std.math.minInt(i64)) / 2);
+    defer expected.deinit();
+    try std.testing.expect(out.eql(&expected));
+}
+
+test "script num shiftRight by 64 or more collapses to zero for either sign" {
+    const allocator = std.testing.allocator;
+
+    const Case = struct { value: i64, bits: usize };
+    const cases = [_]Case{
+        .{ .value = -12345, .bits = 64 },
+        .{ .value = -12345, .bits = 128 },
+        .{ .value = 12345, .bits = 64 },
+        .{ .value = std.math.minInt(i64), .bits = 64 },
+    };
+
+    inline for (cases) |case| {
+        var value = ScriptNum.fromInt(case.value);
+        defer value.deinit();
+        var out = try value.shiftRight(case.bits, allocator);
+        defer out.deinit();
+        try std.testing.expect(out.isZero());
+    }
+}
+
+// Left shift is exact and sign-preserving (a magnitude shift, not a
+// two's-complement one): -1 << 7 == -128, matching SV Node's bignum path
+// for OP_LSHIFTNUM (bsv::bint::operator<<= is OpenSSL BN_lshift on a
+// sign-magnitude BIGNUM). Both go-sdk and SV Node agree here; this pins
+// bsvz's own shiftLeft against a wraparound-style implementation.
+test "script num shiftLeft is exact and sign-preserving for negative values" {
+    const allocator = std.testing.allocator;
+
+    const Case = struct { value: i64, bits: usize, expected: i64 };
+    const cases = [_]Case{
+        .{ .value = -1, .bits = 7, .expected = -128 },
+        .{ .value = -1, .bits = 1, .expected = -2 },
+        .{ .value = -5, .bits = 3, .expected = -40 },
+    };
+
+    inline for (cases) |case| {
+        var value = ScriptNum.fromInt(case.value);
+        defer value.deinit();
+        var out = try value.shiftLeft(case.bits, allocator);
         defer out.deinit();
         try std.testing.expect(out.eql(&ScriptNum.fromInt(case.expected)));
     }

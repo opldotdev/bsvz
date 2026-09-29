@@ -24,7 +24,7 @@ pub const MerklePath = struct {
         data: []const u8,
         cursor: *usize,
     ) !MerklePath {
-        const index = try primitives.varint.VarInt.parse(data[cursor.* ..]);
+        const index = try primitives.varint.VarInt.parse(data[cursor.*..]);
         cursor.* += index.len;
         const block_height = std.math.cast(u32, index.value) orelse return error.Overflow;
 
@@ -37,7 +37,7 @@ pub const MerklePath = struct {
 
         var level: usize = 0;
         while (level < tree_height) : (level += 1) {
-            const count = try primitives.varint.VarInt.parse(data[cursor.* ..]);
+            const count = try primitives.varint.VarInt.parse(data[cursor.*..]);
             cursor.* += count.len;
             const leaf_count = std.math.cast(usize, count.value) orelse return error.Overflow;
             var leaves = try allocator.alloc(PathElement, leaf_count);
@@ -45,7 +45,7 @@ pub const MerklePath = struct {
 
             var leaf_index: usize = 0;
             while (leaf_index < leaf_count) : (leaf_index += 1) {
-                const offset_var = try primitives.varint.VarInt.parse(data[cursor.* ..]);
+                const offset_var = try primitives.varint.VarInt.parse(data[cursor.*..]);
                 cursor.* += offset_var.len;
                 const offset = offset_var.value;
                 if (data.len < cursor.* + 1) return error.EndOfStream;
@@ -361,8 +361,8 @@ const go_brc74_txid1 = "304e737fdfcb017a1a322e78b067ecebb5e07b44f0a36ed1f01264d2
 
 test "merkle path clone and combine keep owned copies" {
     const allocator = std.testing.allocator;
-    const txid_a = crypto.Hash256{ .bytes = [_]u8{0x11} ** 32 };
-    const txid_b = crypto.Hash256{ .bytes = [_]u8{0x22} ** 32 };
+    const txid_a = crypto.Hash256{ .bytes = @as([32]u8, @splat(0x11)) };
+    const txid_b = crypto.Hash256{ .bytes = @as([32]u8, @splat(0x22)) };
 
     var path_a = MerklePath{
         .block_height = 10,
@@ -384,8 +384,8 @@ test "merkle path clone and combine keep owned copies" {
 
 test "merkle path computes missing hashes" {
     const allocator = std.testing.allocator;
-    const left = crypto.Hash256{ .bytes = [_]u8{0x33} ** 32 };
-    const right = crypto.Hash256{ .bytes = [_]u8{0x44} ** 32 };
+    const left = crypto.Hash256{ .bytes = @as([32]u8, @splat(0x33)) };
+    const right = crypto.Hash256{ .bytes = @as([32]u8, @splat(0x44)) };
 
     var path = MerklePath{
         .block_height = 20,

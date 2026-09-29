@@ -354,7 +354,7 @@ fn updateLegacyOutput(state: *std.crypto.hash.sha2.Sha256, output: Output) void 
 }
 
 fn updateLegacySinglePlaceholderOutput(state: *std.crypto.hash.sha2.Sha256) void {
-    const satoshis = [_]u8{0xff} ** 8;
+    const satoshis = @as([8]u8, @splat(0xff));
     state.update(&satoshis);
     state.update(&[_]u8{0x00});
 }
@@ -366,7 +366,7 @@ fn finalizeDoubleSha256(state: *std.crypto.hash.sha2.Sha256) crypto.Hash256 {
 }
 
 fn legacySingleBugBytes() [32]u8 {
-    var bytes = [_]u8{0} ** 32;
+    var bytes = @as([32]u8, @splat(0));
     bytes[0] = 0x01;
     return bytes;
 }
@@ -400,7 +400,7 @@ fn appendLegacyOutput(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allo
 }
 
 fn appendLegacySinglePlaceholderOutput(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
-    const satoshis = [_]u8{0xff} ** 8;
+    const satoshis = @as([8]u8, @splat(0xff));
     try list.appendSlice(allocator, &satoshis);
     try list.append(allocator, 0x00);
 }
@@ -470,7 +470,7 @@ test "forkid sighash preimage matches the parser layout" {
         .inputs = &[_]@import("input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x11} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x11)) },
                     .index = 7,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -506,7 +506,7 @@ test "sighash helper hashes respond to scope flags" {
         .inputs = &[_]@import("input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x01} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x01)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -514,7 +514,7 @@ test "sighash helper hashes respond to scope flags" {
             },
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x02} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x02)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -648,7 +648,7 @@ test "legacy sighash returns the consensus single out-of-range sentinel" {
         .inputs = &[_]@import("input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x01} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x01)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -656,7 +656,7 @@ test "legacy sighash returns the consensus single out-of-range sentinel" {
             },
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x02} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x02)) },
                     .index = 1,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -689,7 +689,7 @@ test "legacy sighash strips OP_CODESEPARATOR from the subscript" {
         .inputs = &[_]@import("input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x11} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x11)) },
                     .index = 7,
                 },
                 .unlocking_script = .{ .bytes = "" },

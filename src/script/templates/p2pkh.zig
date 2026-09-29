@@ -31,7 +31,7 @@ pub fn extractPubKeyHash(locking_script: []const u8) !crypto.Hash160 {
 }
 
 test "p2pkh encode and extract roundtrip" {
-    const pubkey_hash = crypto.Hash160{ .bytes = [_]u8{0x42} ** 20 };
+    const pubkey_hash = crypto.Hash160{ .bytes = @as([20]u8, @splat(0x42)) };
     const locking_script = encode(pubkey_hash);
 
     try std.testing.expect(matches(&locking_script));
@@ -45,7 +45,7 @@ test "p2pkh match rejects malformed scripts" {
 
 test "p2pkh matches the canonical key-one vector across layers" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const expected_pubkey_hash_bytes = try primitives.hex.decode(
@@ -73,14 +73,14 @@ test "p2pkh matches the canonical key-one vector across layers" {
 }
 
 test "p2pkh extract rejects near-miss scripts" {
-    var bad_push = encode(.{ .bytes = [_]u8{0x11} ** 20 });
+    var bad_push = encode(.{ .bytes = @as([20]u8, @splat(0x11)) });
     bad_push[2] = 0x13;
     try std.testing.expectError(error.InvalidScriptTemplate, extractPubKeyHash(&bad_push));
 
-    var bad_opcode = encode(.{ .bytes = [_]u8{0x22} ** 20 });
+    var bad_opcode = encode(.{ .bytes = @as([20]u8, @splat(0x22)) });
     bad_opcode[23] = 0x87;
     try std.testing.expectError(error.InvalidScriptTemplate, extractPubKeyHash(&bad_opcode));
 
-    var truncated = encode(.{ .bytes = [_]u8{0x33} ** 20 });
+    var truncated = encode(.{ .bytes = @as([20]u8, @splat(0x33)) });
     try std.testing.expectError(error.InvalidScriptTemplate, extractPubKeyHash(truncated[0 .. truncated.len - 1]));
 }

@@ -89,7 +89,7 @@ pub fn verifyInput(
 
 test "p2pkh spend signs and verifies a forkid input" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -104,7 +104,7 @@ test "p2pkh spend signs and verifies a forkid input" {
         .inputs = &[_]@import("../input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -133,7 +133,7 @@ test "p2pkh spend signs and verifies a forkid input" {
 
 test "p2pkh spend rejects sighash values that do not fit the checksig byte" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -148,7 +148,7 @@ test "p2pkh spend rejects sighash values that do not fit the checksig byte" {
         .inputs = &[_]@import("../input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },
@@ -173,7 +173,7 @@ test "p2pkh spend rejects sighash values that do not fit the checksig byte" {
 test "p2pkh interpreter verifies the signed unlocking script end to end" {
     const interpreter = @import("../../script/interpreter.zig");
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -188,7 +188,7 @@ test "p2pkh interpreter verifies the signed unlocking script end to end" {
         .inputs = &[_]@import("../input.zig").Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0x33} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0x33)) },
                     .index = 0,
                 },
                 .unlocking_script = .{ .bytes = "" },

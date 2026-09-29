@@ -11,6 +11,13 @@ pub const Error = interpreter.Error || error{
     ScriptVerificationFailed,
 };
 
+/// Chronicle is active on BSV mainnet (height 943,816), so inputs are
+/// verified under post-Chronicle rules (OP_2MUL, OP_2DIV, ...), as go-sdk's
+/// spv.Verify does since go-sdk 413ed49 ("fix(spv): verify scripts under
+/// Chronicle rules", #360). `postChronicleBsv()` is also `ExecutionFlags`'s
+/// default now; spelled out here so this stays correct if that ever changes.
+const script_flags = interpreter.ExecutionFlags.postChronicleBsv();
+
 pub const GullibleChainTracker = struct {
     pub fn isValidRootForHeight(_: GullibleChainTracker, _: @import("../crypto/lib.zig").Hash256, _: u32) !bool {
         return true;
@@ -57,6 +64,7 @@ pub fn verify(
                 .input_index = index,
                 .previous_output = prevout,
                 .unlocking_script = input.unlocking_script,
+                .flags = script_flags,
             })) {
                 return error.ScriptVerificationFailed;
             }
@@ -119,6 +127,7 @@ pub fn verifyBeef(
                 .input_index = index,
                 .previous_output = prevout,
                 .unlocking_script = input.unlocking_script,
+                .flags = script_flags,
             })) {
                 return error.ScriptVerificationFailed;
             }
@@ -222,6 +231,59 @@ test "verify walks non-owning source transaction ancestry" {
     try std.testing.expect(try verify(allocator, &child, GullibleChainTracker{}, null));
 }
 
+test "verify accepts a spend that needs Chronicle (OP_2MUL)" {
+    const allocator = std.testing.allocator;
+
+    var parent = txmod.Transaction{
+        .version = 1,
+        .inputs = try allocator.alloc(txmod.Input, 0),
+        .outputs = try allocator.alloc(txmod.Output, 1),
+        .lock_time = 0,
+    };
+    defer parent.deinit(allocator);
+    @constCast(parent.outputs)[0] = .{
+        .satoshis = 10,
+        // OP_2MUL OP_4 OP_EQUAL
+        .locking_script = .{ .bytes = &[_]u8{ 0x8d, 0x54, 0x87 } },
+    };
+    const parent_txid = try parent.txid(allocator);
+    parent.merkle_path = .{
+        .block_height = 943_816,
+        .path = try allocator.alloc([]PathElement, 1),
+    };
+    parent.owns_merkle_path = true;
+    parent.merkle_path.?.path[0] = try allocator.alloc(PathElement, 1);
+    parent.merkle_path.?.path[0][0] = .{
+        .offset = 0,
+        .hash = parent_txid,
+        .txid = true,
+    };
+
+    var child = txmod.Transaction{
+        .version = 1,
+        .inputs = try allocator.alloc(txmod.Input, 1),
+        .outputs = try allocator.alloc(txmod.Output, 1),
+        .lock_time = 0,
+    };
+    defer child.deinit(allocator);
+    @constCast(child.inputs)[0] = .{
+        .previous_outpoint = .{
+            .txid = .{ .bytes = parent_txid.bytes },
+            .index = 0,
+        },
+        // OP_2
+        .unlocking_script = .{ .bytes = &[_]u8{0x52} },
+        .sequence = 0xffff_ffff,
+        .source_transaction = @ptrCast(&parent),
+    };
+    @constCast(child.outputs)[0] = .{
+        .satoshis = 9,
+        .locking_script = .{ .bytes = &[_]u8{0x51} },
+    };
+
+    try std.testing.expect(try verify(allocator, &child, GullibleChainTracker{}, null));
+}
+
 test "verifyBeef walks ancestor transactions from root txid" {
     const allocator = std.testing.allocator;
 
@@ -308,7 +370,7 @@ test "verify fee model paid vs required" {
     errdefer allocator.free(inputs);
     inputs[0] = .{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0xab} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0xab)) },
             .index = 0,
         },
         .unlocking_script = .{ .bytes = &[_]u8{0x51} },

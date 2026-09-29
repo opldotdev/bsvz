@@ -372,6 +372,6 @@ test "bip32 errors" {
     try std.testing.expectError(error.DeriveHardFromPublic, xp.child(HardenedKeyStart));
     try std.testing.expectError(error.NotPrivExtKey, xp.privateKey());
 
-    try std.testing.expectError(error.InvalidSeedLen, newMaster(&[_]u8{0} ** 8, Versions.mainnet));
+    try std.testing.expectError(error.InvalidSeedLen, newMaster(&@as([8]u8, @splat(0)), Versions.mainnet));
     try std.testing.expectError(error.InvalidChecksum, parseAlloc(allocator, "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHx"));
 }

@@ -3,7 +3,7 @@ const std = @import("std");
 const corpus_path = "../go-sdk/script/interpreter/data/script_tests.json";
 
 fn accessOrRequire(rel_path: []const u8) !void {
-    try std.fs.cwd().access(rel_path, .{});
+    try std.Io.Dir.cwd().access(std.testing.io, rel_path, .{});
 }
 
 const RowAccounting = struct {
@@ -20,16 +20,17 @@ fn collectAccountedRowRefs(allocator: std.mem.Allocator) !RowAccounting {
     var counts = std.AutoHashMap(usize, usize).init(allocator);
     errdefer counts.deinit();
 
-    var dir = try std.fs.cwd().openDir("tests", .{ .iterate = true });
-    defer dir.close();
+    const io = std.testing.io;
+    var dir = try std.Io.Dir.cwd().openDir(io, "tests", .{ .iterate = true });
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |dir_entry| {
+    while (try iter.next(io)) |dir_entry| {
         if (dir_entry.kind != .file) continue;
         if (!std.mem.startsWith(u8, dir_entry.name, "go_")) continue;
         if (!std.mem.endsWith(u8, dir_entry.name, "_vectors.zig")) continue;
 
-        const source = try dir.readFileAlloc(allocator, dir_entry.name, 512 * 1024);
+        const source = try dir.readFileAlloc(io, dir_entry.name, allocator, .limited(512 * 1024));
         defer allocator.free(source);
 
         var cursor: usize = 0;
@@ -83,7 +84,7 @@ test "all go corpus rows are explicitly accounted for" {
     var accounting = try collectAccountedRowRefs(allocator);
     defer accounting.deinit();
 
-    const file = try std.fs.cwd().readFileAlloc(allocator, corpus_path, 8 * 1024 * 1024);
+    const file = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, corpus_path, allocator, .limited(8 * 1024 * 1024));
     defer allocator.free(file);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file, .{});

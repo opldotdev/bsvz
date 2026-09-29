@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const bsvz = @import("bsvz");
 const harness = @import("support/go_reference_harness.zig");
 
@@ -18,7 +19,7 @@ const DynamicRow = struct {
 };
 
 fn accessOrRequire(rel_path: []const u8) !void {
-    try std.fs.cwd().access(rel_path, .{});
+    try std.Io.Dir.cwd().access(std.testing.io, rel_path, .{});
 }
 
 fn containsToken(script_asm: []const u8, needle: []const u8) bool {
@@ -160,8 +161,15 @@ fn loadDynamicRow(index: usize, value: std.json.Value) ?DynamicRow {
     var input_amount: i64 = 0;
     if (items[0] == .array) {
         const amount_items = items[0].array.items;
-        if (amount_items.len == 0 or amount_items[0] != .float) return null;
-        input_amount = @intFromFloat(amount_items[0].float * 100_000_000.0);
+        // The go-sdk corpus writes amounts in BSV, as `123450.0` in older
+        // checkouts and `123450` since go-sdk 9af7ce7 reformatted the file.
+        if (amount_items.len == 0) return null;
+        const amount_bsv: f64 = switch (amount_items[0]) {
+            .float => |bsv| bsv,
+            .integer => |bsv| @floatFromInt(bsv),
+            else => return null,
+        };
+        input_amount = @intFromFloat(amount_bsv * 100_000_000.0);
         item_offset = 1;
     }
 
@@ -206,7 +214,7 @@ test "exact go corpus rows execute through bsvz" {
     const allocator = std.testing.allocator;
     try accessOrRequire(corpus_path);
 
-    const file = try std.fs.cwd().readFileAlloc(allocator, corpus_path, 8 * 1024 * 1024);
+    const file = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, corpus_path, allocator, .limited(8 * 1024 * 1024));
     defer allocator.free(file);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file, .{});

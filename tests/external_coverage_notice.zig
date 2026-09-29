@@ -16,7 +16,7 @@ const external_inputs = [_]ExternalInput{
 };
 
 fn envRequiresExternalCoverage(allocator: std.mem.Allocator) bool {
-    const value = std.process.getEnvVarOwned(allocator, "BSVZ_REQUIRE_EXTERNAL_CORPORA") catch return false;
+    const value = std.testing.environ.getAlloc(allocator, "BSVZ_REQUIRE_EXTERNAL_CORPORA") catch return false;
     defer allocator.free(value);
     return std.mem.eql(u8, value, "1") or
         std.ascii.eqlIgnoreCase(value, "true") or
@@ -34,7 +34,7 @@ test "external corpus availability is visible in default test runs" {
     );
 
     for (external_inputs) |input| {
-        std.fs.cwd().access(input.path, .{}) catch |err| switch (err) {
+        std.Io.Dir.cwd().access(std.testing.io, input.path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 missing_count += 1;
                 if (input.optional_step) |step| {

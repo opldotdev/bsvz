@@ -1,5 +1,6 @@
 //! BRC-77 portable signed messages (go-sdk `message/signed.go` wire: `BB3\\x01`, invoice `2-message signing-…`).
 const std = @import("std");
+const util = @import("../util.zig");
 const ec = @import("../primitives/ec.zig");
 const DerSignature = @import("../crypto/signature.zig").DerSignature;
 
@@ -7,7 +8,7 @@ pub const version_bytes = [4]u8{ 0x42, 0x42, 0x33, 0x01 };
 
 /// Placeholder private key used when signing/verifying for "anyone" (go `PrivateKeyFromBytes([]byte{1})`).
 pub fn anyonePrivateKey() !ec.PrivateKey {
-    var scalar: [32]u8 = [_]u8{0} ** 32;
+    var scalar: [32]u8 = @as([32]u8, @splat(0));
     scalar[31] = 1;
     return ec.PrivateKey.fromBytes(scalar);
 }
@@ -73,7 +74,7 @@ pub fn signAlloc(
     recipient: ?ec.PublicKey,
 ) ![]u8 {
     var key_id: [32]u8 = undefined;
-    std.crypto.random.bytes(&key_id);
+    util.randomBytes(&key_id);
     return signAllocWithKeyId(allocator, message, signer, recipient, key_id);
 }
 
@@ -142,8 +143,8 @@ pub fn verify(message: []const u8, sig: []const u8, recipient: ?ec.PrivateKey) V
 
 test "BRC-77 sign/verify with recipient" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
     const recipient_pub = try recipient.publicKey();
     const msg = [_]u8{ 1, 2, 4, 8, 16, 32 };
 
@@ -155,7 +156,7 @@ test "BRC-77 sign/verify with recipient" {
 
 test "BRC-77 sign/verify anyone" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
     const msg = [_]u8{ 1, 2, 4, 8, 16, 32 };
 
     const sig = try signAlloc(allocator, &msg, sender, null);
@@ -166,8 +167,8 @@ test "BRC-77 sign/verify anyone" {
 
 test "BRC-77 version mismatch" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
     const recipient_pub = try recipient.publicKey();
     const msg = [_]u8{ 1, 2, 4, 8, 16, 32 };
 
@@ -183,8 +184,8 @@ test "BRC-77 version mismatch" {
 
 test "BRC-77 recipient required" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
     const recipient_pub = try recipient.publicKey();
     const msg = [_]u8{ 1, 2, 4, 8, 16, 32 };
 
@@ -196,9 +197,9 @@ test "BRC-77 recipient required" {
 
 test "BRC-77 wrong recipient" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
-    const recipient = try ec.PrivateKey.fromBytes([_]u8{21} ** 32);
-    var wrong_s: [32]u8 = [_]u8{0} ** 32;
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
+    const recipient = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(21)));
+    var wrong_s: [32]u8 = @as([32]u8, @splat(0));
     wrong_s[31] = 22;
     const wrong = try ec.PrivateKey.fromBytes(wrong_s);
     const recipient_pub = try recipient.publicKey();
@@ -212,7 +213,7 @@ test "BRC-77 wrong recipient" {
 
 test "BRC-77 tampered message" {
     const allocator = std.testing.allocator;
-    const sender = try ec.PrivateKey.fromBytes([_]u8{15} ** 32);
+    const sender = try ec.PrivateKey.fromBytes(@as([32]u8, @splat(15)));
     var msg = [_]u8{ 1, 2, 4, 8, 16, 32 };
 
     const sig = try signAlloc(allocator, &msg, sender, null);

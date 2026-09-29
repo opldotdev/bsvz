@@ -9,7 +9,7 @@ pub fn main() !void {
         .inputs = &[_]bsvz.transaction.Input{
             .{
                 .previous_outpoint = .{
-                    .txid = .{ .bytes = [_]u8{0} ** 32 },
+                    .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                     .index = 0,
                 },
                 .unlocking_script = bsvz.script.Script.init(&[_]u8{}),
@@ -36,6 +36,14 @@ pub fn main() !void {
     });
     defer traced.deinit(allocator);
 
-    try traced.writeDebug(std.io.getStdOut().writer());
-    try std.io.getStdOut().writer().writeByte('\n');
+    var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(threaded.io(), &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    try traced.writeDebug(stdout);
+    try stdout.writeByte('\n');
+    try stdout.flush();
 }

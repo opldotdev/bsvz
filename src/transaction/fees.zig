@@ -131,7 +131,7 @@ test "total satoshis and fee compute" {
     const inputs = try allocator.alloc(@import("input.zig").Input, 1);
     inputs[0] = .{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x11} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x11)) },
             .index = 0,
         },
         .unlocking_script = .{ .bytes = &[_]u8{0x51} },
@@ -187,7 +187,7 @@ test "fee distributes remainder to first change output" {
 
     inputs[0] = .{
         .previous_outpoint = .{
-            .txid = .{ .bytes = [_]u8{0x11} ** 32 },
+            .txid = .{ .bytes = @as([32]u8, @splat(0x11)) },
             .index = 0,
         },
         .unlocking_script = .{ .bytes = &[_]u8{0x51} },

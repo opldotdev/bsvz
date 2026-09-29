@@ -40,4 +40,8 @@ pub const ScriptError = error{
     NumberTooBig,
     NegativeLockTime,
     UnsatisfiedLockTime,
+    /// A flag combination the engine refuses: `utxo_after_chronicle` without
+    /// `utxo_after_genesis` (go-sdk thread.go: ErrInvalidFlags,
+    /// "UTXOAfterChronicle requires UTXOAfterGenesis").
+    InvalidFlags,
 };

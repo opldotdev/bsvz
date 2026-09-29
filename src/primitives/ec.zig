@@ -1,4 +1,5 @@
 const std = @import("std");
+const util = @import("../util.zig");
 const secp256k1 = @import("../crypto/secp256k1.zig");
 const sig = @import("../crypto/signature.zig");
 const compact = @import("../crypto/compact.zig");
@@ -57,7 +58,7 @@ pub const PrivateKey = struct {
     pub fn generate() !PrivateKey {
         var bytes: [32]u8 = undefined;
         while (true) {
-            std.crypto.random.bytes(&bytes);
+            util.randomBytes(&bytes);
             if (secp256k1.PrivateKey.fromBytes(bytes)) |key| {
                 return .{ .inner = key };
             } else |_| {
@@ -163,7 +164,7 @@ pub const PrivateKey = struct {
         errdefer allocator.free(points);
 
         var seed: [64]u8 = undefined;
-        std.crypto.random.bytes(&seed);
+        util.randomBytes(&seed);
 
         var used = std.AutoHashMap(u256, void).init(allocator);
         defer used.deinit();
@@ -176,7 +177,7 @@ pub const PrivateKey = struct {
                 var counter: [40]u8 = undefined;
                 std.mem.writeInt(u32, counter[0..4], @intCast(i), .big);
                 std.mem.writeInt(u32, counter[4..8], attempt, .big);
-                std.crypto.random.bytes(counter[8..40]);
+                util.randomBytes(counter[8..40]);
                 const h = crypto_hash.hmacSha512(counter[0..], &seed);
                 x = bytesToU256(h[0..32]) % keyshares.Curve.p;
                 if (x == 0) continue;
@@ -371,7 +372,7 @@ pub fn privateKeyFromBackupShares(
 }
 
 fn integrityTag(key: PrivateKey) [8]u8 {
-    const pub_key = key.publicKey() catch return [_]u8{0} ** 8;
+    const pub_key = key.publicKey() catch return @as([8]u8, @splat(0));
     const compressed = pub_key.toCompressedSec1();
     const digest = crypto_hash.hash160(&compressed).bytes;
     var out: [8]u8 = undefined;
@@ -382,7 +383,7 @@ fn integrityTag(key: PrivateKey) [8]u8 {
 }
 
 fn bytesToU256(bytes: []const u8) u256 {
-    var buf: [32]u8 = [_]u8{0} ** 32;
+    var buf: [32]u8 = @as([32]u8, @splat(0));
     if (bytes.len > 32) {
         @memcpy(buf[0..32], bytes[bytes.len - 32 ..]);
     } else {
@@ -394,7 +395,7 @@ fn bytesToU256(bytes: []const u8) u256 {
 fn randomFieldNonZero() u256 {
     var out: [32]u8 = undefined;
     while (true) {
-        std.crypto.random.bytes(&out);
+        util.randomBytes(&out);
         const v = std.mem.readInt(u256, &out, .big) % keyshares.Curve.p;
         if (v != 0) return v;
     }
@@ -445,7 +446,7 @@ test "deriveSharedSecret is symmetric" {
 test "secp256k1 params match base point" {
     const params = Secp256k1.params();
     try std.testing.expect(Secp256k1.isOnCurve(params.gx, params.gy));
-    var scalar_one = [_]u8{0} ** 32;
+    var scalar_one = @as([32]u8, @splat(0));
     scalar_one[31] = 1;
     const base = try Secp256k1.scalarBaseMult(scalar_one);
     try std.testing.expectEqualSlices(u8, &params.gx, &base.x);

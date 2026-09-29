@@ -109,7 +109,7 @@ fn aesGcmEncryptWith(
     const ctx = Aes.initEnc(key_bytes);
 
     var h: [16]u8 = undefined;
-    const zeros = [_]u8{0} ** 16;
+    const zeros = @as([16]u8, @splat(0));
     ctx.encrypt(&h, &zeros);
 
     const j0 = computeJ0(h, nonce);
@@ -142,7 +142,7 @@ fn aesGcmDecryptWith(
     const ctx = Aes.initEnc(key_bytes);
 
     var h: [16]u8 = undefined;
-    const zeros = [_]u8{0} ** 16;
+    const zeros = @as([16]u8, @splat(0));
     ctx.encrypt(&h, &zeros);
 
     const j0 = computeJ0(h, nonce);
@@ -164,7 +164,7 @@ fn aesGcmDecryptWith(
 
 fn computeJ0(h: [16]u8, nonce: []const u8) [16]u8 {
     if (nonce.len == 12) {
-        var out = [_]u8{0} ** 16;
+        var out = @as([16]u8, @splat(0));
         @memcpy(out[0..12], nonce);
         std.mem.writeInt(u32, out[12..16], 1, .big);
         return out;
@@ -175,7 +175,7 @@ fn computeJ0(h: [16]u8, nonce: []const u8) [16]u8 {
     var mac = Ghash.initForBlockCount(&h, block_count);
     mac.update(nonce);
     mac.pad();
-    var final_block: [16]u8 = [_]u8{0} ** 16;
+    var final_block: [16]u8 = @as([16]u8, @splat(0));
     std.mem.writeInt(u64, final_block[8..16], @as(u64, nonce.len) * 8, .big);
     mac.update(&final_block);
     var out: [16]u8 = undefined;
@@ -212,8 +212,8 @@ fn inc32(block: *[16]u8) void {
 
 test "aes-gcm encrypt/decrypt roundtrip with 12-byte nonce" {
     const allocator = std.testing.allocator;
-    const key = [_]u8{0x11} ** 32;
-    const nonce = [_]u8{0x22} ** 12;
+    const key = @as([32]u8, @splat(0x11));
+    const nonce = @as([12]u8, @splat(0x22));
     const msg = "bsvz aesgcm";
     const ad = "aad";
     const enc = try aesGcmEncrypt(allocator, msg, &key, &nonce, ad);
@@ -225,8 +225,8 @@ test "aes-gcm encrypt/decrypt roundtrip with 12-byte nonce" {
 
 test "aes-gcm encrypt/decrypt roundtrip with 32-byte nonce" {
     const allocator = std.testing.allocator;
-    const key = [_]u8{0x33} ** 32;
-    const nonce = [_]u8{0x44} ** 32;
+    const key = @as([32]u8, @splat(0x33));
+    const nonce = @as([32]u8, @splat(0x44));
     const msg = "bsvz aesgcm long nonce";
     const enc = try aesGcmEncrypt(allocator, msg, &key, &nonce, "");
     defer allocator.free(enc.ciphertext);

@@ -51,7 +51,16 @@ var traced = bsvz.script.thread.verifyScriptsTraced(
 );
 defer traced.deinit(allocator);
 
-try traced.writeDebug(std.io.getStdOut().writer());
+// Zig 0.16: stdout writing requires an Io instance and a buffer.
+var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+defer threaded.deinit();
+
+var stdout_buffer: [4096]u8 = undefined;
+var stdout_writer = std.Io.File.stdout().writer(threaded.io(), &stdout_buffer);
+const stdout = &stdout_writer.interface;
+
+try traced.writeDebug(stdout);
+try stdout.flush();
 ```
 
 Runnable examples:

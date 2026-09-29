@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const bsvz = @import("bsvz");
 const reference_harness = @import("support/go_reference_harness.zig");
 
@@ -32,7 +33,7 @@ const SkipReason = enum {
 };
 
 fn accessOrRequire(rel_path: []const u8) !void {
-    try std.fs.cwd().access(rel_path, .{});
+    try std.Io.Dir.cwd().access(std.testing.io, rel_path, .{});
 }
 
 fn containsToken(script_asm: []const u8, needle: []const u8) bool {
@@ -326,7 +327,7 @@ fn runDynamicRow(allocator: std.mem.Allocator, qualified: QualifiedRow) !void {
     var inputs = [_]bsvz.transaction.Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0x42} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0x42)) },
                 .index = 0,
             },
             .unlocking_script = Script.init(""),
@@ -394,7 +395,7 @@ test "filtered go corpus rows execute through bsvz" {
     const allocator = std.testing.allocator;
     try accessOrRequire(corpus_path);
 
-    const file = try std.fs.cwd().readFileAlloc(allocator, corpus_path, 8 * 1024 * 1024);
+    const file = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, corpus_path, allocator, .limited(8 * 1024 * 1024));
     defer allocator.free(file);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file, .{});

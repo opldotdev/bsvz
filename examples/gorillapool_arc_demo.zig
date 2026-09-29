@@ -18,7 +18,10 @@ pub fn main() !void {
         .api_url = "https://arc.gorillapool.io",
     };
 
-    var result = try broadcaster.broadcast(allocator, &tx);
+    var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+    defer threaded.deinit();
+
+    var result = try broadcaster.broadcast(allocator, threaded.io(), &tx);
     defer result.deinit(allocator);
 
     switch (result) {

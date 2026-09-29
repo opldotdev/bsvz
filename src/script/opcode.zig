@@ -74,6 +74,10 @@ pub const Opcode = enum(u8) {
 
     OP_1ADD = 0x8b,
     OP_1SUB = 0x8c,
+    /// Disabled before Chronicle; re-enabled by it (see `ExecutionFlags.utxo_after_chronicle`).
+    OP_2MUL = 0x8d,
+    /// Disabled before Chronicle; re-enabled by it (see `ExecutionFlags.utxo_after_chronicle`).
+    OP_2DIV = 0x8e,
     OP_NEGATE = 0x8f,
     OP_ABS = 0x90,
     OP_NOT = 0x91,
@@ -121,6 +125,16 @@ pub const Opcode = enum(u8) {
     OP_NOP10 = 0xb9,
 
     _,
+
+    // Chronicle (SV Node v1.2.0) repurposes OP_NOP4..OP_NOP8. The enum keeps
+    // the NOP names (the ASM names are unchanged); these are the Chronicle
+    // names for the same bytes. Source: go-sdk script/opcodes.go (OpSUBSTR
+    // 0xb3 .. OpRSHIFTNUM 0xb7, "was NOP4" .. "was NOP8").
+    pub const OP_SUBSTR: Opcode = .OP_NOP4;
+    pub const OP_LEFT: Opcode = .OP_NOP5;
+    pub const OP_RIGHT: Opcode = .OP_NOP6;
+    pub const OP_LSHIFTNUM: Opcode = .OP_NOP7;
+    pub const OP_RSHIFTNUM: Opcode = .OP_NOP8;
 
     pub fn fromByte(byte: u8) Opcode {
         return @enumFromInt(byte);
@@ -211,6 +225,8 @@ pub const Opcode = enum(u8) {
             .OP_RESERVED2 => "OP_RESERVED2",
             .OP_1ADD => "OP_1ADD",
             .OP_1SUB => "OP_1SUB",
+            .OP_2MUL => "OP_2MUL",
+            .OP_2DIV => "OP_2DIV",
             .OP_NEGATE => "OP_NEGATE",
             .OP_ABS => "OP_ABS",
             .OP_NOT => "OP_NOT",

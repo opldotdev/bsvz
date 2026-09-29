@@ -69,8 +69,8 @@ const curve_n = hex32("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd
 const curve_half_n = hex32("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0");
 
 test "signature DER roundtrip and low-S normalization" {
-    const msg_digest = [_]u8{0x11} ** 32;
-    var key_bytes = [_]u8{0} ** 32;
+    const msg_digest = @as([32]u8, @splat(0x11));
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
     const priv = try secp256k1.PrivateKey.fromBytes(key_bytes);
     const pub_key = try priv.publicKey();

@@ -64,7 +64,7 @@ test "r puzzle raw lock matches single-byte vector" {
 
 test "r puzzle HASH160 adds hash opcode before push" {
     const a = std.testing.allocator;
-    const h = [_]u8{0xab} ** 20;
+    const h = @as([20]u8, @splat(0xab));
     const out = try encodeLock(a, .hash160, &h);
     defer a.free(out);
     try std.testing.expect(std.mem.indexOfScalar(u8, out, 0xa9) != null);

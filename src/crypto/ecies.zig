@@ -1,5 +1,6 @@
 //! Electrum (BIE1) and Bitcore-style ECIES on secp256k1. Matches go-sdk `compat/ecies`.
 const std = @import("std");
+const util = @import("../util.zig");
 const aescbc = @import("../primitives/aescbc.zig");
 const hash = @import("hash.zig");
 const secp = @import("secp256k1.zig");
@@ -23,7 +24,7 @@ fn hmacEqual32(a: []const u8, b: *const [32]u8) bool {
 fn randomPrivateKey() Error!secp.PrivateKey {
     var buf: [32]u8 = undefined;
     for (0..256) |_| {
-        std.crypto.random.bytes(&buf);
+        util.randomBytes(&buf);
         if (secp.PrivateKey.fromBytes(buf)) |k| return k else |_| {}
     }
     return error.KeyGenFailed;
@@ -69,7 +70,7 @@ pub fn electrumEncryptAlloc(
     const cipher = try aescbc.aesCbcEncrypt(allocator, message, key_e, iv, false);
     defer allocator.free(cipher);
 
-    var prefix = std.ArrayListUnmanaged(u8){};
+    var prefix: std.ArrayListUnmanaged(u8) = .empty;
     defer prefix.deinit(allocator);
     try prefix.appendSlice(allocator, magic);
     if (!no_key) {
@@ -136,7 +137,7 @@ pub fn bitcoreEncryptAlloc(
     iv_in: ?[16]u8,
 ) Error![]u8 {
     const sender = from_priv orelse try randomPrivateKey();
-    var iv: [16]u8 = iv_in orelse [_]u8{0} ** 16;
+    var iv: [16]u8 = iv_in orelse @as([16]u8, @splat(0));
 
     const r_buf = try publicKeyBytes(sender);
     const p = try to_pub.toPoint().mul(sender.bytes);
@@ -212,7 +213,7 @@ test "electrum encrypt/decrypt with explicit ephemeral key" {
     const pk = (try compat_wif.decode(allocator, wif)).private_key;
     const pk_pub = try pk.publicKey();
 
-    var eph_sk = [_]u8{0} ** 32;
+    var eph_sk = @as([32]u8, @splat(0));
     eph_sk[16] = 0x42;
     const eph = try secp.PrivateKey.fromBytes(eph_sk);
 

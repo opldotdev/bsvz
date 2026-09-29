@@ -68,7 +68,7 @@ pub const Point = struct {
 
     pub fn toCompressedSec1(self: Point) Sec1Bytes {
         var out = Sec1Bytes{
-            .bytes = [_]u8{0} ** 65,
+            .bytes = @as([65]u8, @splat(0)),
             .len = 1,
         };
         if (self.isIdentity()) {
@@ -84,7 +84,7 @@ pub const Point = struct {
 
     pub fn toUncompressedSec1(self: Point) Sec1Bytes {
         var out = Sec1Bytes{
-            .bytes = [_]u8{0} ** 65,
+            .bytes = @as([65]u8, @splat(0)),
             .len = 1,
         };
         if (self.isIdentity()) {
@@ -99,7 +99,7 @@ pub const Point = struct {
     }
 
     pub fn toRaw64(self: Point) [64]u8 {
-        var out = [_]u8{0} ** 64;
+        var out = @as([64]u8, @splat(0));
         if (self.isIdentity()) return out;
 
         const affine = self.inner.affineCoordinates();
@@ -145,8 +145,8 @@ pub const Point = struct {
     pub fn affineBytes32(self: Point) AffineBytes32 {
         if (self.isIdentity()) {
             return .{
-                .x = [_]u8{0} ** 32,
-                .y = [_]u8{0} ** 32,
+                .x = @as([32]u8, @splat(0)),
+                .y = @as([32]u8, @splat(0)),
             };
         }
 
@@ -276,7 +276,6 @@ pub const PublicKey = struct {
     pub fn verifyDigest256Relaxed(self: PublicKey, digest: [32]u8, der_bytes: []const u8) !bool {
         return verifyDigest256RelaxedSec1(&self.bytes, digest, der_bytes);
     }
-
 };
 
 pub fn verifyDigest256Sec1(sec1: []const u8, digest: [32]u8, sig: signature.DerSignature) !bool {
@@ -377,14 +376,14 @@ fn normalizeLaxDerInt(raw: []const u8) Error![32]u8 {
     }
     if (bytes.len > 32) return error.InvalidEncoding;
 
-    var out = [_]u8{0} ** 32;
+    var out = @as([32]u8, @splat(0));
     @memcpy(out[32 - bytes.len ..], bytes);
     if (std.mem.allEqual(u8, &out, 0)) return error.InvalidEncoding;
     return out;
 }
 
 test "public key derivation and sha256 sign/verify roundtrip" {
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try PrivateKey.fromBytes(key_bytes);
@@ -416,13 +415,13 @@ test "relaxed der parser accepts padded integers that strict der rejects" {
 }
 
 test "digest verification helpers match expected truth values" {
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try PrivateKey.fromBytes(key_bytes);
     const public_key = try private_key.publicKey();
-    const digest = [_]u8{0x42} ** 32;
-    const wrong_digest = [_]u8{0x24} ** 32;
+    const digest = @as([32]u8, @splat(0x42));
+    const wrong_digest = @as([32]u8, @splat(0x24));
     const sig = try private_key.signDigest256(digest);
 
     try std.testing.expect(try verifyDigest256Sec1(&public_key.bytes, digest, sig));
@@ -432,10 +431,10 @@ test "digest verification helpers match expected truth values" {
 }
 
 test "point sec1 and arithmetic wrap stdlib secp256k1" {
-    var scalar_one = [_]u8{0} ** 32;
+    var scalar_one = @as([32]u8, @splat(0));
     scalar_one[31] = 1;
 
-    var scalar_two = [_]u8{0} ** 32;
+    var scalar_two = @as([32]u8, @splat(0));
     scalar_two[31] = 2;
 
     const g = try Point.basePointMul(scalar_one);
@@ -450,7 +449,7 @@ test "point sec1 and arithmetic wrap stdlib secp256k1" {
 }
 
 test "point raw64 and public key bridging" {
-    var scalar = [_]u8{0} ** 32;
+    var scalar = @as([32]u8, @splat(0));
     scalar[31] = 1;
 
     const point = try Point.basePointMul(scalar);
@@ -465,14 +464,14 @@ test "point raw64 and public key bridging" {
     try std.testing.expectEqualSlices(u8, &public_key.toUncompressedSec1(), point.toUncompressedSec1().slice());
     try std.testing.expectEqualSlices(u8, raw[0..32], &x);
     try std.testing.expectEqualSlices(u8, raw[32..64], &y);
-    try std.testing.expectEqualSlices(u8, Point.identity().toCompressedSec1().slice(), (try point.mul([_]u8{0} ** 32)).toCompressedSec1().slice());
+    try std.testing.expectEqualSlices(u8, Point.identity().toCompressedSec1().slice(), (try point.mul(@as([32]u8, @splat(0)))).toCompressedSec1().slice());
 }
 
 test "point affine/raw/sec1 roundtrips stay aligned" {
     const scalars = [_]u8{ 1, 2, 3, 7, 42 };
 
     for (scalars) |scalar_value| {
-        var scalar = [_]u8{0} ** 32;
+        var scalar = @as([32]u8, @splat(0));
         scalar[31] = scalar_value;
 
         const point = try Point.basePointMul(scalar);
@@ -509,9 +508,9 @@ test "point identity encodings roundtrip across public helpers" {
     try std.testing.expectEqual(@as(u8, 0x00), compressed.bytes[0]);
     try std.testing.expectEqual(@as(usize, 1), uncompressed.len);
     try std.testing.expectEqual(@as(u8, 0x00), uncompressed.bytes[0]);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 32), &affine.x);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 32), &affine.y);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 64), &raw);
+    try std.testing.expectEqualSlices(u8, &(@as([32]u8, @splat(0))), &affine.x);
+    try std.testing.expectEqualSlices(u8, &(@as([32]u8, @splat(0))), &affine.y);
+    try std.testing.expectEqualSlices(u8, &(@as([64]u8, @splat(0))), &raw);
     try std.testing.expect((try Point.fromCompressedSec1(compressed.slice())).isIdentity());
     try std.testing.expect((try Point.fromUncompressedSec1(uncompressed.slice())).isIdentity());
     try std.testing.expectError(error.InvalidEncoding, Point.fromAffineBytes32(affine.x, affine.y));

@@ -35,7 +35,7 @@ pub fn runCase(allocator: std.mem.Allocator, case: Case) !void {
     var coinbase_inputs = [_]bsvz.transaction.Input{
         .{
             .previous_outpoint = .{
-                .txid = .{ .bytes = [_]u8{0} ** 32 },
+                .txid = .{ .bytes = @as([32]u8, @splat(0)) },
                 .index = std.math.maxInt(u32),
             },
             .unlocking_script = Script.init(&.{ 0x00, 0x00 }),

@@ -85,7 +85,7 @@ fn computeChallenge(
 }
 
 fn reduceScalar(digest: [32]u8) Scalar {
-    var reduced = [_]u8{0} ** 48;
+    var reduced = @as([48]u8, @splat(0));
     @memcpy(reduced[reduced.len - digest.len ..], &digest);
     return Scalar.fromBytes48(reduced, .big);
 }

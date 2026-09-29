@@ -1,5 +1,7 @@
 ![bsvz](assets/banner.png)
 
+![CI](https://github.com/opldotdev/bsvz/actions/workflows/ci.yml/badge.svg)
+
 # bsvz
 
 BSV foundation library for Zig.
@@ -43,7 +45,7 @@ Crypto, keys, script, transactions, SPV, BEEF, and broadcast. 27 BRC standards c
 
 ## Getting Started
 
-**Requirements:** Zig `0.15.2`
+**Requirements:** Zig `0.16.0` or newer — CI continuously verifies both the latest stable release and current master (`0.17` dev).
 
 Fetch the dependency:
 
@@ -135,6 +137,33 @@ exe.root_module.addImport("bsvz", bsvz.module("bsvz"));
 
 The verification surface covers plain script pairs, full prevout spends, detailed results, and step traces.
 
+### Chronicle
+
+Chronicle (SV Node v1.2.0) is live on BSV mainnet since block 943,816 (7 April 2026), so `ExecutionFlags.utxo_after_chronicle` — and therefore `ExecutionFlags{}`, the default — is **on by default**: current mainnet rules are what you get unless you opt out. Scripts written for Chronicle, such as every stateful [Rúnar](https://github.com/icellan/runar) contract, verify with no extra flags:
+
+```zig
+const ok = try bsvz.script.interpreter.verifyPrevout(.{
+    .allocator = allocator,
+    .tx = &spend_tx,
+    .input_index = input_index,
+    .previous_output = previous_output,
+    .unlocking_script = spend_tx.inputs[input_index].unlocking_script,
+    // .flags defaults to ExecutionFlags{}, i.e. postChronicleBsv().
+});
+```
+
+With the flag on, the engine follows go-sdk's `WithAfterChronicle()`:
+
+| Change | Before Chronicle |
+| --- | --- |
+| `OP_2MUL` / `OP_2DIV` multiply or divide by 2 (exact bignums; `2DIV` truncates toward zero) | disabled: `error.UnknownOpcode` |
+| `OP_VER` pushes the tx version (4 bytes, little-endian) | reserved: `error.UnknownOpcode` |
+| `OP_VERIF` / `OP_VERNOTIF` act like `OP_IF` / `OP_NOTIF` on "the top item equals the 4-byte LE tx version" | always illegal when executed |
+| `0xb3`–`0xb7` are `OP_SUBSTR`, `OP_LEFT`, `OP_RIGHT`, `OP_LSHIFTNUM`, `OP_RSHIFTNUM` (numeric shifts; right shift rounds toward negative infinity) | `OP_NOP4`–`OP_NOP8`: no-ops |
+| Script numbers can be up to 32 MiB long; this replaces `max_script_number_length` | `max_script_number_length` (750,000 by default) |
+
+`utxo_after_chronicle` requires `utxo_after_genesis` (otherwise `error.InvalidFlags`). Callers that deliberately need to verify an older script opt out explicitly: `ExecutionFlags.postGenesisBsv()` for post-Genesis, pre-Chronicle rules, or `ExecutionFlags.legacyReference()` for pre-Genesis legacy rules. `spv.verify` and `spv.verifyBeef` spell out `postChronicleBsv()` (the same as the default) for clarity. Signature hashing is unchanged: the Chronicle `SIGHASH_CHRONICLE` / OTDA digest and the relaxed malleability rules for transactions with version above 1 are not implemented (go-sdk's interpreter does not implement them either).
+
 <details>
 <summary>API reference and examples</summary>
 
@@ -205,7 +234,16 @@ var traced = bsvz.script.thread.verifyScriptsTraced(.{
 }));
 defer traced.deinit(allocator);
 
-try traced.writeDebug(std.io.getStdOut().writer());
+// Zig 0.16: stdout writing requires an Io instance and a buffer.
+var threaded = std.Io.Threaded.init(allocator, .{ .environ = .empty });
+defer threaded.deinit();
+
+var stdout_buffer: [4096]u8 = undefined;
+var stdout_writer = std.Io.File.stdout().writer(threaded.io(), &stdout_buffer);
+const stdout = &stdout_writer.interface;
+
+try traced.writeDebug(stdout);
+try stdout.flush();
 ```
 
 ### Output serialization
@@ -258,6 +296,7 @@ const hash_all = try bsvz.transaction.Output.hashAll(allocator, &[_]bsvz.transac
 | `CHECKSIG` | transaction-aware, legacy and ForkID paths, `CODESEPARATOR` handling, scriptCode normalization |
 | `CHECKMULTISIG` | transaction-aware, post-Genesis behavior, early-exit, `NULLDUMMY`/`NULLFAIL`/ForkID policy |
 | Policy flags | `strict_encoding`, `der_signatures`, `low_s`, `strict_pubkey_encoding`, `null_dummy`, `null_fail`, `sig_push_only`, `clean_stack`, `minimal_data`, `minimal_if`, `discourage_upgradable_nops`, `verify_check_locktime`, `verify_check_sequence` |
+| Chronicle | `utxo_after_chronicle`, on by default (current mainnet): `2MUL`, `2DIV`, `VER`, `VERIF`, `VERNOTIF`, `SUBSTR`, `LEFT`, `RIGHT`, `LSHIFTNUM`, `RSHIFTNUM`, 32 MiB script numbers; checked row for row against go-sdk and on a real Rúnar AMM pool spend |
 | CLTV / CSV / upgradable NOPs | tx-aware legacy/reference verify semantics behind explicit flags; post-Genesis BSV profile treats them as NOP-family ops unless policy discourages them |
 | Numeric minimal-encoding parity | minimal push and minimal numeric decoding enforced where Go applies `MINIMALDATA` |
 | `CODESEPARATOR` parity | legacy and ForkID scriptCode behavior, chained separator tests, parser/scanner coverage |
@@ -265,7 +304,7 @@ const hash_all = try bsvz.transaction.Output.hashAll(allocator, &[_]bsvz.transac
 
 **Scope:**
 
-- Modern post-Genesis BSV script execution by default, plus legacy-reference semantics and opt-in legacy P2SH for compatibility and corpus parity
+- Current mainnet BSV script execution by default (post-Genesis with Chronicle), opt-out pre-Chronicle and legacy-reference semantics, plus opt-in legacy P2SH for compatibility and corpus parity
 
 </details>
 

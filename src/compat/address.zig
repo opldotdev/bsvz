@@ -68,7 +68,7 @@ test "p2pkh address encodes the all-zero mainnet vector" {
     const address = try encodeP2pkh(
         allocator,
         .mainnet,
-        .{ .bytes = [_]u8{0} ** 20 },
+        .{ .bytes = @as([20]u8, @splat(0)) },
     );
     defer allocator.free(address);
 
@@ -79,7 +79,7 @@ test "p2pkh address decode roundtrip preserves network and locking script" {
     const allocator = std.testing.allocator;
     const original = P2pkhAddress{
         .network = .testnet,
-        .pubkey_hash = .{ .bytes = [_]u8{0x42} ** 20 },
+        .pubkey_hash = .{ .bytes = @as([20]u8, @splat(0x42)) },
     };
 
     const encoded = try original.encode(allocator);
@@ -95,7 +95,7 @@ test "p2pkh address decode roundtrip preserves network and locking script" {
 
 test "p2pkh address from compressed public key one matches the known vector" {
     const allocator = std.testing.allocator;
-    var key_bytes = [_]u8{0} ** 32;
+    var key_bytes = @as([32]u8, @splat(0));
     key_bytes[31] = 1;
 
     const private_key = try crypto.PrivateKey.fromBytes(key_bytes);
@@ -109,11 +109,11 @@ test "p2pkh address from compressed public key one matches the known vector" {
 test "p2pkh address decode rejects malformed payloads and prefixes" {
     const allocator = std.testing.allocator;
 
-    const short_payload = try primitives.base58.encodeCheck(allocator, &([_]u8{0x00} ++ ([_]u8{0x11} ** 19)));
+    const short_payload = try primitives.base58.encodeCheck(allocator, &([_]u8{0x00} ++ (@as([19]u8, @splat(0x11)))));
     defer allocator.free(short_payload);
     try std.testing.expectError(error.InvalidAddressPayload, decodeP2pkh(allocator, short_payload));
 
-    const bad_prefix = try primitives.base58.encodeCheck(allocator, &([_]u8{0x05} ++ ([_]u8{0x22} ** 20)));
+    const bad_prefix = try primitives.base58.encodeCheck(allocator, &([_]u8{0x05} ++ (@as([20]u8, @splat(0x22)))));
     defer allocator.free(bad_prefix);
     try std.testing.expectError(error.InvalidNetworkPrefix, decodeP2pkh(allocator, bad_prefix));
 
